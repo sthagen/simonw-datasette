@@ -13,6 +13,7 @@ from datasette.plugins import pm
 from datasette.database import QueryInterrupted
 from datasette.utils import (
     await_me_maybe,
+    EscapeHtmlWriter,
     InvalidSql,
     LimitedWriter,
     call_with_supported_arguments,
@@ -103,6 +104,9 @@ class BaseView:
         return "ff0000"
 
     async def options(self, request, *args, **kwargs):
+        return Response.text("Method not allowed", status=405)
+
+    async def post(self, request, *args, **kwargs):
         return Response.text("Method not allowed", status=405)
 
     async def put(self, request, *args, **kwargs):
@@ -262,8 +266,25 @@ class DataView(BaseView):
 
     async def as_csv(self, request, database, hash, **kwargs):
         stream = request.args.get("_stream")
+        # Do not calculate facets or counts:
+        extra_parameters = [
+            "{}=1".format(key)
+            for key in ("_nofacet", "_nocount")
+            if not request.args.get(key)
+        ]
+        if extra_parameters:
+            if not request.query_string:
+                new_query_string = "&".join(extra_parameters)
+            else:
+                new_query_string = (
+                    request.query_string + "&" + "&".join(extra_parameters)
+                )
+            new_scope = dict(
+                request.scope, query_string=new_query_string.encode("latin-1")
+            )
+            request.scope = new_scope
         if stream:
-            # Some quick sanity checks
+            # Some quick soundness checks
             if not self.ds.setting("allow_csv_stream"):
                 raise BadRequest("CSV streaming is disabled")
             if request.args.get("_next"):
@@ -276,6 +297,8 @@ class DataView(BaseView):
             )
             if isinstance(response_or_template_contexts, Response):
                 return response_or_template_contexts
+            elif len(response_or_template_contexts) == 4:
+                data, _, _, _ = response_or_template_contexts
             else:
                 data, _, _ = response_or_template_contexts
         except (sqlite3.OperationalError, InvalidSql) as e:
@@ -298,9 +321,27 @@ class DataView(BaseView):
                 if column in expanded_columns:
                     headings.append(f"{column}_label")
 
+        content_type = "text/plain; charset=utf-8"
+        preamble = ""
+        postamble = ""
+
+        trace = request.args.get("_trace")
+        if trace:
+            content_type = "text/html; charset=utf-8"
+            preamble = (
+                "<html><head><title>CSV debug</title></head>"
+                '<body><textarea style="width: 90%; height: 70vh">'
+            )
+            postamble = "</textarea></body></html>"
+
         async def stream_fn(r):
-            nonlocal data
-            writer = csv.writer(LimitedWriter(r, self.ds.setting("max_csv_mb")))
+            nonlocal data, trace
+            limited_writer = LimitedWriter(r, self.ds.setting("max_csv_mb"))
+            if trace:
+                await limited_writer.write(preamble)
+                writer = csv.writer(EscapeHtmlWriter(limited_writer))
+            else:
+                writer = csv.writer(limited_writer)
             first = True
             next = None
             while first or (next and stream):
@@ -333,7 +374,7 @@ class DataView(BaseView):
                                         )
                                     else:
                                         # Otherwise generate URL for this query
-                                        cell = self.ds.absolute_url(
+                                        url = self.ds.absolute_url(
                                             request,
                                             path_with_format(
                                                 request=request,
@@ -346,6 +387,9 @@ class DataView(BaseView):
                                                 },
                                                 replace_format="csv",
                                             ),
+                                        )
+                                        cell = url.replace("&_nocount=1", "").replace(
+                                            "&_nofacet=1", ""
                                         )
                                 new_row.append(cell)
                             row = new_row
@@ -371,13 +415,14 @@ class DataView(BaseView):
                     sys.stderr.flush()
                     await r.write(str(e))
                     return
+            await limited_writer.write(postamble)
 
-        content_type = "text/plain; charset=utf-8"
         headers = {}
         if self.ds.cors:
             headers["Access-Control-Allow-Origin"] = "*"
         if request.args.get("_dl", None):
-            content_type = "text/csv; charset=utf-8"
+            if not trace:
+                content_type = "text/csv; charset=utf-8"
             disposition = 'attachment; filename="{}.csv"'.format(
                 kwargs.get("table", database)
             )
@@ -427,7 +472,7 @@ class DataView(BaseView):
 
         extra_template_data = {}
         start = time.perf_counter()
-        status_code = 200
+        status_code = None
         templates = []
         try:
             response_or_template_contexts = await self.data(
@@ -435,7 +480,14 @@ class DataView(BaseView):
             )
             if isinstance(response_or_template_contexts, Response):
                 return response_or_template_contexts
-
+            # If it has four items, it includes an HTTP status code
+            if len(response_or_template_contexts) == 4:
+                (
+                    data,
+                    extra_template_data,
+                    templates,
+                    status_code,
+                ) = response_or_template_contexts
             else:
                 data, extra_template_data, templates = response_or_template_contexts
         except QueryInterrupted:
@@ -502,12 +554,15 @@ class DataView(BaseView):
             if isinstance(result, dict):
                 r = Response(
                     body=result.get("body"),
-                    status=result.get("status_code", 200),
+                    status=result.get("status_code", status_code or 200),
                     content_type=result.get("content_type", "text/plain"),
                     headers=result.get("headers"),
                 )
             elif isinstance(result, Response):
                 r = result
+                if status_code is not None:
+                    # Over-ride the status code
+                    r.status = status_code
             else:
                 assert False, f"{result} should be dict or Response"
         else:
@@ -567,7 +622,8 @@ class DataView(BaseView):
             if "metadata" not in context:
                 context["metadata"] = self.ds.metadata
             r = await self.render(templates, request=request, context=context)
-            r.status = status_code
+            if status_code is not None:
+                r.status = status_code
 
         ttl = request.args.get("_ttl", None)
         if ttl is None or not ttl.isdigit():

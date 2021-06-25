@@ -302,7 +302,7 @@ publish_subcommand(publish)
     The Click command group for the ``datasette publish`` subcommand
 
 This hook allows you to create new providers for the ``datasette publish``
-command. Datasette uses this hook internally to implement the default ``now``
+command. Datasette uses this hook internally to implement the default ``cloudrun``
 and ``heroku`` subcommands, so you can read
 `their source <https://github.com/simonw/datasette/tree/main/datasette/publish>`_
 to see examples of this hook in action.
@@ -348,7 +348,7 @@ Let's say you want to build a plugin that adds a ``datasette publish my_hosting_
         ):
             # Your implementation goes here
 
-Examples: `datasette-publish-fly <https://github.com/simonw/datasette-publish-fly>`_, `datasette-publish-now <https://github.com/simonw/datasette-publish-now>`_
+Examples: `datasette-publish-fly <https://github.com/simonw/datasette-publish-fly>`_, `datasette-publish-vercel <https://github.com/simonw/datasette-publish-vercel>`_
 
 .. _plugin_hook_render_cell:
 
@@ -389,7 +389,7 @@ If the value matches that pattern, the plugin returns an HTML link element:
 .. code-block:: python
 
     from datasette import hookimpl
-    import jinja2
+    import markupsafe
     import json
 
 
@@ -415,9 +415,9 @@ If the value matches that pattern, the plugin returns an HTML link element:
             or href.startswith("https://")
         ):
             return None
-        return jinja2.Markup('<a href="{href}">{label}</a>'.format(
-            href=jinja2.escape(data["href"]),
-            label=jinja2.escape(data["label"] or "") or "&nbsp;"
+        return markupsafe.Markup('<a href="{href}">{label}</a>'.format(
+            href=markupsafe.escape(data["href"]),
+            label=markupsafe.escape(data["label"] or "") or "&nbsp;"
         ))
 
 Examples: `datasette-render-binary <https://github.com/simonw/datasette-render-binary>`_, `datasette-render-markdown <https://github.com/simonw/datasette-render-markdown>`__, `datasette-json-html <https://github.com/simonw/datasette-json-html>`__
@@ -619,6 +619,7 @@ Each Facet subclass implements a new type of facet operation. The class should l
             # using self.sql and self.params as the starting point
             facet_results = {}
             facets_timed_out = []
+            facet_size = self.get_facet_size()
             # Do some calculations here...
             for column in columns_selected_for_facet:
                 try:
@@ -1014,14 +1015,17 @@ The function can alternatively return an awaitable function if it needs to make 
 
 .. _plugin_hook_menu_links:
 
-menu_links(datasette, actor)
-----------------------------
+menu_links(datasette, actor, request)
+-------------------------------------
 
 ``datasette`` - :ref:`internals_datasette`
     You can use this to access plugin configuration options via ``datasette.plugin_config(your_plugin_name)``, or to execute SQL queries.
 
 ``actor`` - dictionary or None
     The currently authenticated :ref:`actor <authentication_actor>`.
+
+``request`` - object or None
+    The current HTTP :ref:`internals_request`. This can be ``None`` if the request object is not available.
 
 This hook allows additional items to be included in the menu displayed by Datasette's top right menu icon.
 
@@ -1044,11 +1048,10 @@ This example adds a new menu item but only if the signed in user is ``"root"``:
 
 Using :ref:`internals_datasette_urls` here ensures that links in the menu will take the :ref:`setting_base_url` setting into account.
 
-
 .. _plugin_hook_table_actions:
 
-table_actions(datasette, actor, database, table)
-------------------------------------------------
+table_actions(datasette, actor, database, table, request)
+---------------------------------------------------------
 
 ``datasette`` - :ref:`internals_datasette`
     You can use this to access plugin configuration options via ``datasette.plugin_config(your_plugin_name)``, or to execute SQL queries.
@@ -1061,6 +1064,9 @@ table_actions(datasette, actor, database, table)
 
 ``table`` - string
     The name of the table.
+
+``request`` - object
+    The current HTTP :ref:`internals_request`. This can be ``None`` if the request object is not available.
 
 This hook allows table actions to be displayed in a menu accessed via an action icon at the top of the table page. It should return a list of ``{"href": "...", "label": "..."}`` menu items.
 
@@ -1082,8 +1088,8 @@ This example adds a new table action if the signed in user is ``"root"``:
 
 .. _plugin_hook_database_actions:
 
-database_actions(datasette, actor, database)
---------------------------------------------
+database_actions(datasette, actor, database, request)
+-----------------------------------------------------
 
 ``datasette`` - :ref:`internals_datasette`
     You can use this to access plugin configuration options via ``datasette.plugin_config(your_plugin_name)``, or to execute SQL queries.
@@ -1094,4 +1100,32 @@ database_actions(datasette, actor, database)
 ``database`` - string
     The name of the database.
 
+``request`` - object
+    The current HTTP :ref:`internals_request`.
+
 This hook is similar to :ref:`plugin_hook_table_actions` but populates an actions menu on the database page.
+
+.. _plugin_hook_skip_csrf:
+
+skip_csrf(datasette, scope)
+---------------------------
+
+``datasette`` - :ref:`internals_datasette`
+    You can use this to access plugin configuration options via ``datasette.plugin_config(your_plugin_name)``, or to execute SQL queries.
+
+``scope`` - dictionary
+    The `ASGI scope <https://asgi.readthedocs.io/en/latest/specs/www.html#http-connection-scope>`__ for the incoming HTTP request.
+
+This hook can be used to skip :ref:`internals_csrf` for a specific incoming request. For example, you might have a custom path at ``/submit-comment`` which is designed to accept comments from anywhere, whether or not the incoming request originated on the site and has an accompanying CSRF token.
+
+This example will disable CSRF protection for that specific URL path:
+
+.. code-block:: python
+
+    from datasette import hookimpl
+
+    @hookimpl
+    def skip_csrf(scope):
+        return scope["path"] == "/submit-comment"
+
+If any of the currently active ``skip_csrf()`` plugin hooks return ``True``, CSRF protection will be skipped for the request.

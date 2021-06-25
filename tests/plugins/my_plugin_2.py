@@ -1,6 +1,6 @@
 from datasette import hookimpl
 from functools import wraps
-import jinja2
+import markupsafe
 import json
 
 
@@ -38,11 +38,11 @@ def render_cell(value, database):
         or href.startswith("https://")
     ):
         return None
-    return jinja2.Markup(
+    return markupsafe.Markup(
         '<a data-database="{database}" href="{href}">{label}</a>'.format(
             database=database,
-            href=jinja2.escape(data["href"]),
-            label=jinja2.escape(data["label"] or "") or "&nbsp;",
+            href=markupsafe.escape(data["href"]),
+            label=markupsafe.escape(data["label"] or "") or "&nbsp;",
         )
     )
 
@@ -158,9 +158,12 @@ def menu_links(datasette, actor):
 
 
 @hookimpl
-def table_actions(datasette, database, table, actor):
+def table_actions(datasette, database, table, actor, request):
     async def inner():
         if actor:
-            return [{"href": datasette.urls.instance(), "label": "From async"}]
+            label = "From async"
+            if request.args.get("_hello"):
+                label += " " + request.args["_hello"]
+            return [{"href": datasette.urls.instance(), "label": label}]
 
     return inner

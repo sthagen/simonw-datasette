@@ -452,7 +452,8 @@ table a:link {
     margin-left: -10%;
     font-size: 0.8em;
 }
-.rows-and-columns td ol,ul {
+.rows-and-columns td ol,
+.rows-and-columns td ul {
     list-style: initial;
     list-style-position: inside;
 }
@@ -645,13 +646,20 @@ form button[type=button] {
 .facet-info a.cross:active {
     text-decoration: none;
 }
+ul li.facet-truncated {
+    list-style-type: none;
+    position: relative;
+    top: -0.35em;
+    text-indent: 0.85em;
+}
+
 .advanced-export {
     margin-top: 1em;
     padding: 0.01em 2em 0.01em 1em;
     width: auto;
     display: inline-block;
     box-shadow: 1px 2px 8px 2px rgba(0,0,0,0.08);
-		background-color: white;
+	background-color: white;
 }
 
 .download-sqlite em {

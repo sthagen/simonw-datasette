@@ -15,6 +15,7 @@ from .fixtures import (  # noqa
     app_client_conflicting_database_names,
     app_client_with_cors,
     app_client_with_dot,
+    app_client_with_trace,
     app_client_immutable_and_inspect_file,
     generate_compound_rows,
     generate_sortable_rows,
@@ -24,6 +25,7 @@ from .fixtures import (  # noqa
     METADATA,
 )
 import json
+import pathlib
 import pytest
 import sys
 import urllib
@@ -1422,6 +1424,7 @@ def test_settings_json(app_client):
         "force_https_urls": False,
         "hash_urls": False,
         "template_debug": False,
+        "trace_debug": False,
         "base_url": "/",
     } == response.json
 
@@ -1669,6 +1672,36 @@ def test_suggest_facets_off():
         assert [] == client.get("/fixtures/facetable.json").json["suggested_facets"]
 
 
+@pytest.mark.parametrize("nofacet", (True, False))
+def test_nofacet(app_client, nofacet):
+    path = "/fixtures/facetable.json?_facet=state"
+    if nofacet:
+        path += "&_nofacet=1"
+    response = app_client.get(path)
+    if nofacet:
+        assert response.json["suggested_facets"] == []
+        assert response.json["facet_results"] == {}
+    else:
+        assert response.json["suggested_facets"] != []
+        assert response.json["facet_results"] != {}
+
+
+@pytest.mark.parametrize("nocount,expected_count", ((True, None), (False, 15)))
+def test_nocount(app_client, nocount, expected_count):
+    path = "/fixtures/facetable.json"
+    if nocount:
+        path += "?_nocount=1"
+    response = app_client.get(path)
+    assert response.json["filtered_table_rows_count"] == expected_count
+
+
+def test_nocount_nofacet_if_shape_is_object(app_client_with_trace):
+    response = app_client_with_trace.get(
+        "/fixtures/facetable.json?_trace=1&_shape=object"
+    )
+    assert "count(*)" not in response.text
+
+
 def test_expand_labels(app_client):
     response = app_client.get(
         "/fixtures/facetable.json?_shape=object&_labels=1&_size=2"
@@ -1835,9 +1868,17 @@ def test_custom_query_with_unicode_characters(app_client):
     assert [{"id": 1, "name": "San Francisco"}] == response.json
 
 
-def test_trace(app_client):
-    response = app_client.get("/fixtures/simple_primary_key.json?_trace=1")
+@pytest.mark.parametrize("trace_debug", (True, False))
+def test_trace(trace_debug):
+    with make_app_client(config={"trace_debug": trace_debug}) as client:
+        response = client.get("/fixtures/simple_primary_key.json?_trace=1")
+        assert response.status == 200
+
     data = response.json
+    if not trace_debug:
+        assert "_trace" not in data
+        return
+
     assert "_trace" in data
     trace_info = data["_trace"]
     assert isinstance(trace_info["request_duration_ms"], float)
@@ -1890,7 +1931,7 @@ def test_database_with_space_in_name(app_client_two_attached_databases, path):
 
 def test_common_prefix_database_names(app_client_conflicting_database_names):
     # https://github.com/simonw/datasette/issues/597
-    assert ["fixtures", "foo", "foo-bar"] == [
+    assert ["foo-bar", "foo", "fixtures"] == [
         d["name"]
         for d in app_client_conflicting_database_names.get("/-/databases.json").json
     ]
@@ -2009,3 +2050,90 @@ def test_http_options_request(app_client):
     response = app_client.request("/fixtures", method="OPTIONS")
     assert response.status == 200
     assert response.text == "ok"
+
+
+@pytest.mark.parametrize(
+    "path,expected_columns",
+    (
+        ("/fixtures/facetable.json?_col=created", ["pk", "created"]),
+        (
+            "/fixtures/facetable.json?_nocol=created",
+            [
+                "pk",
+                "planet_int",
+                "on_earth",
+                "state",
+                "city_id",
+                "neighborhood",
+                "tags",
+                "complex_array",
+                "distinct_some_null",
+            ],
+        ),
+        (
+            "/fixtures/facetable.json?_col=state&_col=created",
+            ["pk", "state", "created"],
+        ),
+        (
+            "/fixtures/facetable.json?_col=state&_col=state",
+            ["pk", "state"],
+        ),
+        (
+            "/fixtures/facetable.json?_col=state&_col=created&_nocol=created",
+            ["pk", "state"],
+        ),
+        (
+            # Ensure faceting doesn't break, https://github.com/simonw/datasette/issues/1345
+            "/fixtures/facetable.json?_nocol=state&_facet=state",
+            [
+                "pk",
+                "created",
+                "planet_int",
+                "on_earth",
+                "city_id",
+                "neighborhood",
+                "tags",
+                "complex_array",
+                "distinct_some_null",
+            ],
+        ),
+        (
+            "/fixtures/simple_view.json?_nocol=content",
+            ["upper_content"],
+        ),
+        ("/fixtures/simple_view.json?_col=content", ["content"]),
+    ),
+)
+def test_col_nocol(app_client, path, expected_columns):
+    response = app_client.get(path)
+    assert response.status == 200
+    columns = response.json["columns"]
+    assert columns == expected_columns
+
+
+@pytest.mark.parametrize(
+    "path,expected_error",
+    (
+        ("/fixtures/facetable.json?_col=bad", "_col=bad - invalid columns"),
+        ("/fixtures/facetable.json?_nocol=bad", "_nocol=bad - invalid columns"),
+        ("/fixtures/facetable.json?_nocol=pk", "_nocol=pk - invalid columns"),
+        ("/fixtures/simple_view.json?_col=bad", "_col=bad - invalid columns"),
+    ),
+)
+def test_col_nocol_errors(app_client, path, expected_error):
+    response = app_client.get(path)
+    assert response.status == 400
+    assert response.json["error"] == expected_error
+
+
+@pytest.mark.asyncio
+async def test_db_path(app_client):
+    db = app_client.ds.get_database()
+    path = pathlib.Path(db.path)
+
+    assert path.exists()
+
+    datasette = Datasette([path])
+
+    # this will break with a path
+    await datasette.refresh_schemas()

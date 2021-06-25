@@ -19,10 +19,9 @@ import urllib.parse
 from concurrent import futures
 from pathlib import Path
 
-from markupsafe import Markup
+from markupsafe import Markup, escape
 from itsdangerous import URLSafeSerializer
-import jinja2
-from jinja2 import ChoiceLoader, Environment, FileSystemLoader, PrefixLoader, escape
+from jinja2 import ChoiceLoader, Environment, FileSystemLoader, PrefixLoader
 from jinja2.environment import Template
 from jinja2.exceptions import TemplateNotFound
 import uvicorn
@@ -162,6 +161,11 @@ SETTINGS = (
         "template_debug",
         False,
         "Allow display of template debug information with ?_context=1",
+    ),
+    Setting(
+        "trace_debug",
+        False,
+        "Allow display of SQL trace debug information with ?_trace=1",
     ),
     Setting("base_url", "/", "Datasette URLs should use this base path"),
 )
@@ -350,7 +354,7 @@ class Datasette:
                 INSERT OR REPLACE INTO databases (database_name, path, is_memory, schema_version)
                 VALUES (?, ?, ?, ?)
             """,
-                [database_name, db.path, db.is_memory, schema_version],
+                [database_name, str(db.path), db.is_memory, schema_version],
                 block=True,
             )
             await populate_schema_tables(internal_db, db)
@@ -647,7 +651,7 @@ class Datasette:
                 "is_memory": d.is_memory,
                 "hash": d.hash,
             }
-            for name, d in sorted(self.databases.items(), key=lambda p: p[1].name)
+            for name, d in self.databases.items()
             if name != "_internal"
         ]
 
@@ -829,7 +833,9 @@ class Datasette:
         async def menu_links():
             links = []
             for hook in pm.hook.menu_links(
-                datasette=self, actor=request.actor if request else None
+                datasette=self,
+                actor=request.actor if request else None,
+                request=request or None,
             ):
                 extra_links = await await_me_maybe(hook)
                 if extra_links:
@@ -864,7 +870,7 @@ class Datasette:
         }
         if request and request.args.get("_context") and self.setting("template_debug"):
             return "<pre>{}</pre>".format(
-                jinja2.escape(json.dumps(template_context, default=repr, indent=4))
+                escape(json.dumps(template_context, default=repr, indent=4))
             )
 
         return await template.render_async(template_context)
@@ -1042,14 +1048,18 @@ class Datasette:
                 if not database.is_mutable:
                     await database.table_counts(limit=60 * 60 * 1000)
 
-        asgi = AsgiLifespan(
-            AsgiTracer(
-                asgi_csrf.asgi_csrf(
-                    DatasetteRouter(self, routes),
-                    signing_secret=self._secret,
-                    cookie_name="ds_csrftoken",
-                )
+        asgi = asgi_csrf.asgi_csrf(
+            DatasetteRouter(self, routes),
+            signing_secret=self._secret,
+            cookie_name="ds_csrftoken",
+            skip_if_scope=lambda scope: any(
+                pm.hook.skip_csrf(datasette=self, scope=scope)
             ),
+        )
+        if self.setting("trace_debug"):
+            asgi = AsgiTracer(asgi)
+        asgi = AsgiLifespan(
+            asgi,
             on_startup=setup_db,
         )
         for wrapper in pm.hook.asgi_wrapper(datasette=self):
@@ -1090,6 +1100,7 @@ class DatasetteRouter:
         base_url = self.ds.setting("base_url")
         if base_url != "/" and path.startswith(base_url):
             path = "/" + path[len(base_url) :]
+            scope = dict(scope, route_path=path)
         request = Request(scope, receive)
         # Populate request_messages if ds_messages cookie is present
         try:
@@ -1144,9 +1155,8 @@ class DatasetteRouter:
             await asgi_send_redirect(send, path.decode("latin1"))
         else:
             # Is there a pages/* template matching this path?
-            template_path = (
-                os.path.join("pages", *request.scope["path"].split("/")) + ".html"
-            )
+            route_path = request.scope.get("route_path", request.scope["path"])
+            template_path = os.path.join("pages", *route_path.split("/")) + ".html"
             try:
                 template = self.ds.jinja_env.select_template([template_path])
             except TemplateNotFound:
@@ -1154,7 +1164,7 @@ class DatasetteRouter:
             if template is None:
                 # Try for a pages/blah/{name}.html template match
                 for regex, wildcard_template in self.page_routes:
-                    match = regex.match(request.scope["path"])
+                    match = regex.match(route_path)
                     if match is not None:
                         context.update(match.groupdict())
                         template = wildcard_template
@@ -1357,8 +1367,8 @@ class DatasetteClient:
         self.ds = ds
         self.app = ds.app()
 
-    def _fix(self, path):
-        if not isinstance(path, PrefixedUrlString):
+    def _fix(self, path, avoid_path_rewrites=False):
+        if not isinstance(path, PrefixedUrlString) and not avoid_path_rewrites:
             path = self.ds.urls.path(path)
         if path.startswith("/"):
             path = f"http://localhost{path}"
@@ -1393,5 +1403,8 @@ class DatasetteClient:
             return await client.delete(self._fix(path), **kwargs)
 
     async def request(self, method, path, **kwargs):
+        avoid_path_rewrites = kwargs.pop("avoid_path_rewrites", None)
         async with httpx.AsyncClient(app=self.app) as client:
-            return await client.request(method, self._fix(path), **kwargs)
+            return await client.request(
+                method, self._fix(path, avoid_path_rewrites), **kwargs
+            )

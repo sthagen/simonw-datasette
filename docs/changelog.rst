@@ -4,6 +4,70 @@
 Changelog
 =========
 
+.. _v0_58a1:
+
+0.58a1 (2021-06-24)
+-------------------
+
+- New plugin hook: :ref:`plugin_hook_skip_csrf`, for opting out of CSRF protection based on the incoming request. (:issue:`1377`)
+- ``POST`` requests to endpoints that do not support that HTTP verb now return a 405 error.
+- ``db.path`` can now be provided as a ``pathlib.Path`` object, useful when writing unit tests for plugins. Thanks, Chris Amico. (:issue:`1365`)
+
+.. _v0_58a0:
+
+0.58a0 (2021-06-09)
+-------------------
+
+- The :ref:`menu_links() <plugin_hook_menu_links>`, :ref:`table_actions() <plugin_hook_table_actions>` and :ref:`database_actions() <plugin_hook_database_actions>` plugin hooks all gained a new optional ``request`` argument providing access to the current request. (:issue:`1371`)
+
+.. _v0_57_1:
+
+0.57.1 (2021-06-08)
+-------------------
+
+- Fixed visual display glitch with global navigation menu. (:issue:`1367`)
+- No longer truncates the list of table columns displayed on the ``/database`` page. (:issue:`1364`)
+
+.. _v0_57:
+
+0.57 (2021-06-05)
+-----------------
+
+.. warning::
+    This release fixes a `reflected cross-site scripting <https://owasp.org/www-community/attacks/xss/#reflected-xss-attacks>`__ security hole with the ``?_trace=1`` feature. You should upgrade to this version, or to Datasette 0.56.1, as soon as possible. (:issue:`1360`)
+
+In addition to the security fix, this release includes ``?_col=`` and ``?_nocol=`` options for controlling which columns are displayed for a table, ``?_facet_size=`` for increasing the number of facet results returned, re-display of your SQL query should an error occur and numerous bug fixes.
+
+New features
+~~~~~~~~~~~~
+
+- If an error occurs while executing a user-provided SQL query, that query is now re-displayed in an editable form along with the error message. (:issue:`619`)
+-  New ``?_col=`` and ``?_nocol=`` parameters to show and hide columns in a table, plus an interface for hiding and showing columns in the column cog menu. (:issue:`615`)
+- A new ``?_facet_size=`` parameter for customizing the number of facet results returned on a table or view page. (:issue:`1332`)
+- ``?_facet_size=max`` sets that to the maximum, which defaults to 1,000 and is controlled by the the :ref:`setting_max_returned_rows` setting. If facet results are truncated the … at the bottom of the facet list now links to this parameter. (:issue:`1337`)
+- ``?_nofacet=1`` option to disable all facet calculations on a page, used as a performance optimization for CSV exports and ``?_shape=array/object``. (:issue:`1349`, :issue:`263`)
+- ``?_nocount=1`` option to disable full query result counts. (:issue:`1353`)
+- ``?_trace=1`` debugging option is now controlled by the new :ref:`setting_trace_debug` setting, which is turned off by default. (:issue:`1359`)
+
+Bug fixes and other improvements
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- :ref:`custom_pages` now work correctly when combined with the :ref:`setting_base_url` setting. (:issue:`1238`)
+- Fixed intermittent error displaying the index page when the user did not have permission to access one of the tables. Thanks, Guy Freeman. (:issue:`1305`)
+- Columns with the name "Link" are no longer incorrectly displayed in bold. (:issue:`1308`)
+- Fixed error caused by tables with a single quote in their names. (:issue:`1257`)
+- Updated dependencies: ``pytest-asyncio``, ``Black``, ``jinja2``, ``aiofiles``, ``click``, and ``itsdangerous``.
+- The official Datasette Docker image now supports ``apt-get install``. (:issue:`1320`)
+- The Heroku runtime used by ``datasette publish heroku`` is now ``python-3.8.10``.
+
+.. _v0_56_1:
+
+0.56.1 (2021-06-05)
+-------------------
+
+.. warning::
+    This release fixes a `reflected cross-site scripting <https://owasp.org/www-community/attacks/xss/#reflected-xss-attacks>`__ security hole with the ``?_trace=1`` feature. You should upgrade to this version, or to Datasette 0.57, as soon as possible. (:issue:`1360`)
+
 .. _v0_56:
 
 0.56 (2021-03-28)

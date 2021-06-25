@@ -1,7 +1,9 @@
+from bs4 import BeautifulSoup as Soup
 from .fixtures import (  # noqa
     app_client,
     app_client_csv_max_mb_one,
     app_client_with_cors,
+    app_client_with_trace,
 )
 
 EXPECTED_TABLE_CSV = """id,content
@@ -51,7 +53,7 @@ pk,foreign_key_with_label,foreign_key_with_label_label,foreign_key_with_blank_la
 
 
 def test_table_csv(app_client):
-    response = app_client.get("/fixtures/simple_primary_key.csv")
+    response = app_client.get("/fixtures/simple_primary_key.csv?_oh=1")
     assert response.status == 200
     assert not response.headers.get("Access-Control-Allow-Origin")
     assert "text/plain; charset=utf-8" == response.headers["content-type"]
@@ -157,3 +159,26 @@ def test_table_csv_stream(app_client):
     # With _stream=1 should return header + 1001 rows
     response = app_client.get("/fixtures/compound_three_primary_keys.csv?_stream=1")
     assert 1002 == len([b for b in response.body.split(b"\r\n") if b])
+
+
+def test_csv_trace(app_client_with_trace):
+    response = app_client_with_trace.get("/fixtures/simple_primary_key.csv?_trace=1")
+    assert response.headers["content-type"] == "text/html; charset=utf-8"
+    soup = Soup(response.text, "html.parser")
+    assert (
+        soup.find("textarea").text
+        == "id,content\r\n1,hello\r\n2,world\r\n3,\r\n4,RENDER_CELL_DEMO\r\n"
+    )
+    assert "select id, content from simple_primary_key" in soup.find("pre").text
+
+
+def test_table_csv_stream_does_not_calculate_facets(app_client_with_trace):
+    response = app_client_with_trace.get("/fixtures/simple_primary_key.csv?_trace=1")
+    soup = Soup(response.text, "html.parser")
+    assert "select content, count(*) as n" not in soup.find("pre").text
+
+
+def test_table_csv_stream_does_not_calculate_counts(app_client_with_trace):
+    response = app_client_with_trace.get("/fixtures/simple_primary_key.csv?_trace=1")
+    soup = Soup(response.text, "html.parser")
+    assert "select count(*)" not in soup.find("pre").text

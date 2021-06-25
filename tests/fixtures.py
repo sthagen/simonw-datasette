@@ -52,6 +52,7 @@ EXPECTED_PLUGINS = [
             "register_magic_parameters",
             "register_routes",
             "render_cell",
+            "skip_csrf",
             "startup",
             "table_actions",
         ],
@@ -126,19 +127,20 @@ def make_app_client(
             for extra_filename, extra_sql in extra_databases.items():
                 extra_filepath = os.path.join(tmpdir, extra_filename)
                 sqlite3.connect(extra_filepath).executescript(extra_sql)
-                files.append(extra_filepath)
+                # Insert at start to help test /-/databases ordering:
+                files.insert(0, extra_filepath)
         os.chdir(os.path.dirname(filepath))
         config = config or {}
-        config.update(
-            {
-                "default_page_size": 50,
-                "max_returned_rows": max_returned_rows or 100,
-                "sql_time_limit_ms": sql_time_limit_ms or 200,
-                # Default is 3 but this results in "too many open files"
-                # errors when running the full test suite:
-                "num_sql_threads": 1,
-            }
-        )
+        for key, value in {
+            "default_page_size": 50,
+            "max_returned_rows": max_returned_rows or 100,
+            "sql_time_limit_ms": sql_time_limit_ms or 200,
+            # Default is 3 but this results in "too many open files"
+            # errors when running the full test suite:
+            "num_sql_threads": 1,
+        }.items():
+            if key not in config:
+                config[key] = value
         ds = Datasette(
             files,
             immutables=immutables,
@@ -210,6 +212,12 @@ def app_client_two_attached_databases_one_immutable():
 @pytest.fixture(scope="session")
 def app_client_with_hash():
     with make_app_client(config={"hash_urls": True}, is_immutable=True) as client:
+        yield client
+
+
+@pytest.fixture(scope="session")
+def app_client_with_trace():
+    with make_app_client(config={"trace_debug": True}, is_immutable=True) as client:
         yield client
 
 

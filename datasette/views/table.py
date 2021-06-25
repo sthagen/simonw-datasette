@@ -2,7 +2,7 @@ import urllib
 import itertools
 import json
 
-import jinja2
+import markupsafe
 
 from datasette.plugins import pm
 from datasette.database import QueryInterrupted
@@ -64,6 +64,41 @@ class Row:
 
 
 class RowTableShared(DataView):
+    async def columns_to_select(self, db, table, request):
+        table_columns = await db.table_columns(table)
+        pks = await db.primary_keys(table)
+        columns = list(table_columns)
+        if "_col" in request.args:
+            columns = list(pks)
+            _cols = request.args.getlist("_col")
+            bad_columns = [column for column in _cols if column not in table_columns]
+            if bad_columns:
+                raise DatasetteError(
+                    "_col={} - invalid columns".format(", ".join(bad_columns)),
+                    status=400,
+                )
+            # De-duplicate maintaining order:
+            columns.extend(dict.fromkeys(_cols))
+        if "_nocol" in request.args:
+            # Return all columns EXCEPT these
+            bad_columns = [
+                column
+                for column in request.args.getlist("_nocol")
+                if (column not in table_columns) or (column in pks)
+            ]
+            if bad_columns:
+                raise DatasetteError(
+                    "_nocol={} - invalid columns".format(", ".join(bad_columns)),
+                    status=400,
+                )
+            tmp_columns = [
+                column
+                for column in columns
+                if column not in request.args.getlist("_nocol")
+            ]
+            columns = tmp_columns
+        return columns
+
     async def sortable_columns_for_table(self, database, table, use_rowid):
         db = self.ds.databases[database]
         table_metadata = self.ds.table_metadata(database, table)
@@ -135,12 +170,12 @@ class RowTableShared(DataView):
                         "value_type": "pk",
                         "is_special_link_column": is_special_link_column,
                         "raw": pk_path,
-                        "value": jinja2.Markup(
+                        "value": markupsafe.Markup(
                             '<a href="{base_url}{database}/{table}/{flat_pks_quoted}">{flat_pks}</a>'.format(
                                 base_url=base_url,
                                 database=database,
                                 table=urllib.parse.quote_plus(table),
-                                flat_pks=str(jinja2.escape(pk_path)),
+                                flat_pks=str(markupsafe.escape(pk_path)),
                                 flat_pks_quoted=path_from_row_pks(row, pks, not pks),
                             )
                         ),
@@ -166,7 +201,7 @@ class RowTableShared(DataView):
                 if plugin_display_value is not None:
                     display_value = plugin_display_value
                 elif isinstance(value, bytes):
-                    display_value = jinja2.Markup(
+                    display_value = markupsafe.Markup(
                         '<a class="blob-download" href="{}">&lt;Binary:&nbsp;{}&nbsp;byte{}&gt;</a>'.format(
                             self.ds.urls.row_blob(
                                 database,
@@ -187,22 +222,22 @@ class RowTableShared(DataView):
                     link_template = (
                         LINK_WITH_LABEL if (label != value) else LINK_WITH_VALUE
                     )
-                    display_value = jinja2.Markup(
+                    display_value = markupsafe.Markup(
                         link_template.format(
                             database=database,
                             base_url=base_url,
                             table=urllib.parse.quote_plus(other_table),
                             link_id=urllib.parse.quote_plus(str(value)),
-                            id=str(jinja2.escape(value)),
-                            label=str(jinja2.escape(label)) or "-",
+                            id=str(markupsafe.escape(value)),
+                            label=str(markupsafe.escape(label)) or "-",
                         )
                     )
                 elif value in ("", None):
-                    display_value = jinja2.Markup("&nbsp;")
+                    display_value = markupsafe.Markup("&nbsp;")
                 elif is_url(str(value).strip()):
-                    display_value = jinja2.Markup(
+                    display_value = markupsafe.Markup(
                         '<a href="{url}">{url}</a>'.format(
-                            url=jinja2.escape(value.strip())
+                            url=markupsafe.escape(value.strip())
                         )
                     )
                 elif column in table_metadata.get("units", {}) and value != "":
@@ -212,7 +247,9 @@ class RowTableShared(DataView):
                     # representation, which we have to round off to avoid ugliness. In the vast
                     # majority of cases this rounding will be inconsequential. I hope.
                     value = round(value.to_compact(), 6)
-                    display_value = jinja2.Markup(f"{value:~P}".replace(" ", "&nbsp;"))
+                    display_value = markupsafe.Markup(
+                        f"{value:~P}".replace(" ", "&nbsp;")
+                    )
                 else:
                     display_value = str(value)
                     if truncate_cells and len(display_value) > truncate_cells:
@@ -321,23 +358,33 @@ class TableView(RowTableShared):
         )
 
         pks = await db.primary_keys(table)
-        table_column_details = await db.table_column_details(table)
-        table_columns = [column.name for column in table_column_details]
+        table_columns = await db.table_columns(table)
 
-        select_columns = ", ".join(escape_sqlite(t) for t in table_columns)
+        specified_columns = await self.columns_to_select(db, table, request)
+        select_specified_columns = ", ".join(
+            escape_sqlite(t) for t in specified_columns
+        )
+        select_all_columns = ", ".join(escape_sqlite(t) for t in table_columns)
 
         use_rowid = not pks and not is_view
         if use_rowid:
-            select = f"rowid, {select_columns}"
+            select_specified_columns = f"rowid, {select_specified_columns}"
+            select_all_columns = f"rowid, {select_all_columns}"
             order_by = "rowid"
             order_by_pks = "rowid"
         else:
-            select = select_columns
             order_by_pks = ", ".join([escape_sqlite(pk) for pk in pks])
             order_by = order_by_pks
 
         if is_view:
             order_by = ""
+
+        nocount = request.args.get("_nocount")
+        nofacet = request.args.get("_nofacet")
+
+        if request.args.get("_shape") in ("array", "object"):
+            nocount = True
+            nofacet = True
 
         # Ensure we don't drop anything with an empty value e.g. ?name__exact=
         args = MultiParams(
@@ -598,7 +645,7 @@ class TableView(RowTableShared):
             where_clause = f"where {' and '.join(where_clauses)} "
 
         if order_by:
-            order_by = f"order by {order_by} "
+            order_by = f"order by {order_by}"
 
         extra_args = {}
         # Handle ?_size=500
@@ -621,13 +668,22 @@ class TableView(RowTableShared):
         else:
             page_size = self.ds.page_size
 
-        sql_no_limit = "select {select} from {table_name} {where}{order_by}".format(
-            select=select,
+        sql_no_limit = (
+            "select {select_all_columns} from {table_name} {where}{order_by}".format(
+                select_all_columns=select_all_columns,
+                table_name=escape_sqlite(table),
+                where=where_clause,
+                order_by=order_by,
+            )
+        )
+        sql = "select {select_specified_columns} from {table_name} {where}{order_by} limit {page_size}{offset}".format(
+            select_specified_columns=select_specified_columns,
             table_name=escape_sqlite(table),
             where=where_clause,
             order_by=order_by,
+            page_size=page_size + 1,
+            offset=offset,
         )
-        sql = f"{sql_no_limit.rstrip()} limit {page_size + 1}{offset}"
 
         if request.args.get("_timelimit"):
             extra_args["custom_time_limit"] = int(request.args.get("_timelimit"))
@@ -648,7 +704,7 @@ class TableView(RowTableShared):
             except KeyError:
                 pass
 
-        if count_sql and filtered_table_rows_count is None:
+        if count_sql and filtered_table_rows_count is None and not nocount:
             try:
                 count_rows = list(await db.execute(count_sql, from_sql_params))
                 filtered_table_rows_count = count_rows[0][0]
@@ -682,13 +738,14 @@ class TableView(RowTableShared):
                 )
             )
 
-        for facet in facet_instances:
-            (
-                instance_facet_results,
-                instance_facets_timed_out,
-            ) = await facet.facet_results()
-            facet_results.update(instance_facet_results)
-            facets_timed_out.extend(instance_facets_timed_out)
+        if not nofacet:
+            for facet in facet_instances:
+                (
+                    instance_facet_results,
+                    instance_facets_timed_out,
+                ) = await facet.facet_results()
+                facet_results.update(instance_facet_results)
+                facets_timed_out.extend(instance_facets_timed_out)
 
         # Figure out columns and rows for the query
         columns = [r[0] for r in results.description]
@@ -714,6 +771,8 @@ class TableView(RowTableShared):
             for fk, _ in expandable_columns:
                 column = fk["column"]
                 if column not in columns_to_expand:
+                    continue
+                if column not in columns:
                     continue
                 expanded_columns.append(column)
                 # Gather the values
@@ -777,6 +836,7 @@ class TableView(RowTableShared):
             self.ds.setting("suggest_facets")
             and self.ds.setting("allow_facet")
             and not _next
+            and not nofacet
         ):
             for facet in facet_instances:
                 suggested_facets.extend(await facet.suggest())
@@ -834,6 +894,7 @@ class TableView(RowTableShared):
                     table=table,
                     database=database,
                     actor=request.actor,
+                    request=request,
                 ):
                     extra_links = await await_me_maybe(hook)
                     if extra_links:

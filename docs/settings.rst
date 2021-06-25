@@ -163,7 +163,7 @@ Should Datasette calculate suggested facets? On by default, turn this off like s
 allow_download
 ~~~~~~~~~~~~~~
 
-Should users be able to download the original SQLite database using a link on the database index page? This is turned on by default - to disable database downloads, use the following::
+Should users be able to download the original SQLite database using a link on the database index page? This is turned on by default. However, databases can only be downloaded if they are served in immutable mode and not in-memory. If downloading is unavailable for either of these reasons, the download link is hidden even if ``allow_download`` is on. To disable database downloads, use the following::
 
     datasette mydatabase.db --setting allow_download off
 
@@ -261,7 +261,7 @@ database file to the URL path for every table and query within that database.
 
 When combined with far-future expire headers this ensures that queries can be
 cached forever, safe in the knowledge that any modifications to the database
-itself will result in new, uncachcacheed URL paths.
+itself will result in new, uncached URL paths.
 
 ::
 
@@ -285,6 +285,22 @@ Some examples:
 * https://latest.datasette.io/?_context=1
 * https://latest.datasette.io/fixtures?_context=1
 * https://latest.datasette.io/fixtures/roadside_attractions?_context=1
+
+.. _setting_trace_debug:
+
+trace_debug
+~~~~~~~~~~~
+
+This setting enables appending ``?_trace=1`` to any page in order to see the SQL queries and other trace information that was used to generate that page.
+
+Enable it like this::
+
+    datasette mydatabase.db --setting trace_debug 1
+
+Some examples:
+
+* https://latest.datasette.io/?_trace=1
+* https://latest.datasette.io/fixtures/roadside_attractions?_trace=1
 
 .. _setting_base_url:
 

@@ -781,9 +781,9 @@ def test_hook_menu_links(app_client):
     response = app_client.get("/")
     assert get_menu_links(response.text) == []
 
-    response_2 = app_client.get("/?_bot=1")
+    response_2 = app_client.get("/?_bot=1&_hello=BOB")
     assert get_menu_links(response_2.text) == [
-        {"label": "Hello", "href": "/"},
+        {"label": "Hello, BOB", "href": "/"},
         {"label": "Hello 2", "href": "/"},
     ]
 
@@ -800,12 +800,12 @@ def test_hook_table_actions(app_client, table_or_view):
     response = app_client.get(f"/fixtures/{table_or_view}")
     assert get_table_actions_links(response.text) == []
 
-    response_2 = app_client.get(f"/fixtures/{table_or_view}?_bot=1")
+    response_2 = app_client.get(f"/fixtures/{table_or_view}?_bot=1&_hello=BOB")
     assert sorted(
         get_table_actions_links(response_2.text), key=lambda l: l["label"]
     ) == [
         {"label": "Database: fixtures", "href": "/"},
-        {"label": "From async", "href": "/"},
+        {"label": "From async BOB", "href": "/"},
         {"label": f"Table: {table_or_view}", "href": "/"},
     ]
 
@@ -821,7 +821,32 @@ def test_hook_database_actions(app_client):
     response = app_client.get("/fixtures")
     assert get_table_actions_links(response.text) == []
 
-    response_2 = app_client.get("/fixtures?_bot=1")
+    response_2 = app_client.get("/fixtures?_bot=1&_hello=BOB")
     assert get_table_actions_links(response_2.text) == [
-        {"label": "Database: fixtures", "href": "/"},
+        {"label": "Database: fixtures - BOB", "href": "/"},
     ]
+
+
+def test_hook_skip_csrf(app_client):
+    cookie = app_client.actor_cookie({"id": "test"})
+    csrf_response = app_client.post(
+        "/post/",
+        post_data={"this is": "post data"},
+        csrftoken_from=True,
+        cookies={"ds_actor": cookie},
+    )
+    assert csrf_response.status == 200
+    missing_csrf_response = app_client.post(
+        "/post/", post_data={"this is": "post data"}, cookies={"ds_actor": cookie}
+    )
+    assert missing_csrf_response.status == 403
+    # But "/skip-csrf" should allow
+    allow_csrf_response = app_client.post(
+        "/skip-csrf", post_data={"this is": "post data"}, cookies={"ds_actor": cookie}
+    )
+    assert allow_csrf_response.status == 405  # Method not allowed
+    # /skip-csrf-2 should not
+    second_missing_csrf_response = app_client.post(
+        "/skip-csrf-2", post_data={"this is": "post data"}, cookies={"ds_actor": cookie}
+    )
+    assert second_missing_csrf_response.status == 403

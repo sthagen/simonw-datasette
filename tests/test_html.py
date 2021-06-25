@@ -29,11 +29,11 @@ def test_homepage(app_client_two_attached_databases):
     )
     # Should be two attached databases
     assert [
-        {"href": "/fixtures", "text": "fixtures"},
         {"href": r"/extra%20database", "text": "extra database"},
+        {"href": "/fixtures", "text": "fixtures"},
     ] == [{"href": a["href"], "text": a.text.strip()} for a in soup.select("h2 a")]
-    # The first attached database should show count text and attached tables
-    h2 = soup.select("h2")[1]
+    # Database should show count text and attached tables
+    h2 = soup.select("h2")[0]
     assert "extra database" == h2.text.strip()
     counts_p, links_p = h2.find_all_next("p")[:2]
     assert (
@@ -92,6 +92,13 @@ def test_memory_database_page():
         assert response.status == 200
 
 
+def test_not_allowed_methods():
+    with make_app_client(memory=True) as client:
+        for method in ("post", "put", "patch", "delete"):
+            response = client.request(path="/_memory", method=method.upper())
+            assert response.status == 405
+
+
 def test_database_page_redirects_with_url_hash(app_client_with_hash):
     response = app_client_with_hash.get("/fixtures", allow_redirects=False)
     assert response.status == 302
@@ -101,6 +108,11 @@ def test_database_page_redirects_with_url_hash(app_client_with_hash):
 
 def test_database_page(app_client):
     response = app_client.get("/fixtures")
+    assert (
+        b"<p><em>pk, foreign_key_with_label, foreign_key_with_blank_label, "
+        b"foreign_key_with_no_label, foreign_key_compound_pk1, "
+        b"foreign_key_compound_pk2</em></p>"
+    ) in response.body
     soup = Soup(response.body, "html.parser")
     queries_ul = soup.find("h2", text="Queries").find_next_sibling("ul")
     assert queries_ul is not None
@@ -1402,6 +1414,17 @@ def test_zero_results(app_client, path):
     assert 1 == len(soup.select("p.zero-results"))
 
 
+def test_query_error(app_client):
+    response = app_client.get("/fixtures?sql=select+*+from+notatable")
+    html = response.text
+    assert '<p class="message-error">no such table: notatable</p>' in html
+    assert (
+        '<textarea id="sql-editor" name="sql">select * from notatable</textarea>'
+        in html
+    )
+    assert "0 results" not in html
+
+
 def test_config_template_debug_on():
     with make_app_client(config={"template_debug": True}) as client:
         response = client.get("/fixtures/facetable?_context=1")
@@ -1512,6 +1535,7 @@ def test_base_url_config(app_client_base_url_prefix, path):
             and href
             not in {
                 "https://datasette.io/",
+                "https://github.com/simonw/datasette",
                 "https://github.com/simonw/datasette/blob/main/LICENSE",
                 "https://github.com/simonw/datasette/blob/main/tests/fixtures.py",
                 "/login-as-root",  # Only used for the latest.datasette.io demo
@@ -1612,3 +1636,84 @@ def test_navigation_menu_links(
             assert (
                 details.find("a", {"href": link}) is None
             ), f"{link} found but should not have been in nav menu"
+
+
+@pytest.mark.parametrize(
+    "max_returned_rows,path,expected_num_facets,expected_ellipses,expected_ellipses_url",
+    (
+        (
+            5,
+            # Default should show 2 facets
+            "/fixtures/facetable?_facet=neighborhood",
+            2,
+            True,
+            "/fixtures/facetable?_facet=neighborhood&_facet_size=max",
+        ),
+        # _facet_size above max_returned_rows should show max_returned_rows (5)
+        (
+            5,
+            "/fixtures/facetable?_facet=neighborhood&_facet_size=50",
+            5,
+            True,
+            "/fixtures/facetable?_facet=neighborhood&_facet_size=max",
+        ),
+        # If max_returned_rows is high enough, should return all
+        (
+            20,
+            "/fixtures/facetable?_facet=neighborhood&_facet_size=max",
+            14,
+            False,
+            None,
+        ),
+        # If num facets > max_returned_rows, show ... without a link
+        # _facet_size above max_returned_rows should show max_returned_rows (5)
+        (
+            5,
+            "/fixtures/facetable?_facet=neighborhood&_facet_size=max",
+            5,
+            True,
+            None,
+        ),
+    ),
+)
+def test_facet_more_links(
+    max_returned_rows,
+    path,
+    expected_num_facets,
+    expected_ellipses,
+    expected_ellipses_url,
+):
+    with make_app_client(
+        config={"max_returned_rows": max_returned_rows, "default_facet_size": 2}
+    ) as client:
+        response = client.get(path)
+        soup = Soup(response.body, "html.parser")
+        lis = soup.select("#facet-neighborhood ul li:not(.facet-truncated)")
+        facet_truncated = soup.select_one(".facet-truncated")
+        assert len(lis) == expected_num_facets
+        if not expected_ellipses:
+            assert facet_truncated is None
+        else:
+            if expected_ellipses_url:
+                assert facet_truncated.find("a")["href"] == expected_ellipses_url
+            else:
+                assert facet_truncated.find("a") is None
+
+
+def test_unavailable_table_does_not_break_sort_relationships():
+    # https://github.com/simonw/datasette/issues/1305
+    with make_app_client(
+        metadata={
+            "databases": {
+                "fixtures": {"tables": {"foreign_key_references": {"allow": False}}}
+            }
+        }
+    ) as client:
+        response = client.get("/?_sort=relationships")
+        assert response.status == 200
+
+
+def test_trace_correctly_escaped(app_client):
+    response = app_client.get("/fixtures?sql=select+'<h1>Hello'&_trace=1")
+    assert "select '<h1>Hello" not in response.text
+    assert "select &#39;&lt;h1&gt;Hello" in response.text

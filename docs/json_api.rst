@@ -206,6 +206,16 @@ query string arguments:
     For how many seconds should this response be cached by HTTP proxies? Use
     ``?_ttl=0`` to disable HTTP caching entirely for this request.
 
+``?_trace=1``
+    Turns on tracing for this page: SQL queries executed during the request will
+    be gathered and included in the response, either in a new ``"_traces"`` key
+    for JSON responses or at the bottom of the page if the response is in HTML.
+
+    The structure of the data returned here should be considered highly unstable
+    and very likely to change.
+
+    Only available if the :ref:`setting_trace_debug` setting is enabled.
+
 .. _table_arguments:
 
 Table arguments
@@ -296,6 +306,12 @@ You can filter the data returned by the table based on column values using a que
 Special table arguments
 ~~~~~~~~~~~~~~~~~~~~~~~
 
+``?_col=COLUMN1&_col=COLUMN2``
+    List specific columns to display. These will be shown along with any primary keys.
+
+``?_nocol=COLUMN1&_nocol=COLUMN2``
+    List specific columns to hide - any column not listed will be displayed. Primary keys cannot be hidden.
+
 ``?_labels=on/off``
     Expand foreign key references for every possible column. See below.
 
@@ -371,13 +387,17 @@ Special table arguments
     Pagination by continuation token - pass the token that was returned in the
     ``"next"`` property by the previous page.
 
-``?_trace=1``
-    Turns on tracing for this page: SQL queries executed during the request will
-    be gathered and included in the response, either in a new ``"_traces"`` key
-    for JSON responses or at the bottom of the page if the response is in HTML.
+``?_facet=column``
+    Facet by column. Can be applied multiple times, see :ref:`facets`. Only works on the default JSON output, not on any of the custom shapes.
 
-    The structure of the data returned here should be considered highly unstable
-    and very likely to change.
+``?_facet_size=100``
+    Increase the number of facet results returned for each facet. Use ``?_facet_size=max`` for the maximum available size, determined by :ref:`setting_max_returned_rows`.
+
+``?_nofacet=1``
+    Disable all facets and facet suggestions for this page, including any defined by :ref:`facets_metadata`.
+
+``?_nocount=1``
+    Disable the ``select count(*)`` query used on this page - a count of ``None`` will be returned instead.
 
 .. _expand_foreign_keys:
 

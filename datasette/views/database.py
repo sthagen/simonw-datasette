@@ -1,8 +1,8 @@
 import os
 import hashlib
 import itertools
-import jinja2
 import json
+from markupsafe import Markup, escape
 from urllib.parse import parse_qsl, urlencode
 
 from datasette.utils import (
@@ -14,6 +14,7 @@ from datasette.utils import (
     path_with_added_args,
     path_with_format,
     path_with_removed_args,
+    sqlite3,
     InvalidSql,
 )
 from datasette.utils.asgi import AsgiFileDownload, Response, Forbidden
@@ -109,6 +110,7 @@ class DatabaseView(DataView):
                 datasette=self.ds,
                 database=database,
                 actor=request.actor,
+                request=request,
             ):
                 extra_links = await await_me_maybe(hook)
                 if extra_links:
@@ -239,6 +241,8 @@ class QueryView(DataView):
 
         templates = [f"query-{to_css_class(database)}.html", "query.html"]
 
+        query_error = None
+
         # Execute query - as write or as read
         if write:
             if request.method == "POST":
@@ -320,10 +324,15 @@ class QueryView(DataView):
                 params_for_query = MagicParameters(params, request, self.ds)
             else:
                 params_for_query = params
-            results = await self.ds.execute(
-                database, sql, params_for_query, truncate=True, **extra_args
-            )
-            columns = [r[0] for r in results.description]
+            try:
+                results = await self.ds.execute(
+                    database, sql, params_for_query, truncate=True, **extra_args
+                )
+                columns = [r[0] for r in results.description]
+            except sqlite3.DatabaseError as e:
+                query_error = e
+                results = None
+                columns = []
 
         if canned_query:
             templates.insert(
@@ -337,7 +346,7 @@ class QueryView(DataView):
 
         async def extra_template():
             display_rows = []
-            for row in results.rows:
+            for row in results.rows if results else []:
                 display_row = []
                 for column, value in zip(results.columns, row):
                     display_value = value
@@ -354,11 +363,11 @@ class QueryView(DataView):
                         display_value = plugin_value
                     else:
                         if value in ("", None):
-                            display_value = jinja2.Markup("&nbsp;")
+                            display_value = Markup("&nbsp;")
                         elif is_url(str(display_value).strip()):
-                            display_value = jinja2.Markup(
+                            display_value = Markup(
                                 '<a href="{url}">{url}</a>'.format(
-                                    url=jinja2.escape(value.strip())
+                                    url=escape(value.strip())
                                 )
                             )
                         elif isinstance(display_value, bytes):
@@ -372,7 +381,7 @@ class QueryView(DataView):
                                     ).hexdigest(),
                                 },
                             )
-                            display_value = jinja2.Markup(
+                            display_value = Markup(
                                 '<a class="blob-download" href="{}">&lt;Binary:&nbsp;{}&nbsp;byte{}&gt;</a>'.format(
                                     blob_url,
                                     len(display_value),
@@ -423,17 +432,20 @@ class QueryView(DataView):
 
         return (
             {
+                "ok": not query_error,
                 "database": database,
                 "query_name": canned_query,
-                "rows": results.rows,
-                "truncated": results.truncated,
+                "rows": results.rows if results else [],
+                "truncated": results.truncated if results else False,
                 "columns": columns,
                 "query": {"sql": sql, "params": params},
+                "error": str(query_error) if query_error else None,
                 "private": private,
                 "allow_execute_sql": allow_execute_sql,
             },
             extra_template,
             templates,
+            400 if query_error else 200,
         )
 
 
