@@ -65,7 +65,11 @@ You can start the Datasette process running using the following::
     sudo systemctl daemon-reload
     sudo systemctl start datasette.service
 
-You can confirm that Datasette is running on port 8000 like so::
+You may need to restart the Datasette service after making changes to its ``metadata.json`` configuration or the ``datasette.service`` file. You can do that using::
+
+    sudo systemctl restart datasette.service
+
+Once the service has started you can confirm that Datasette is running on port 8000 like so::
 
     curl 127.0.0.1:8000/-/versions.json
     # Should output JSON showing the installed version
@@ -140,18 +144,36 @@ Here is an example of an `nginx <https://nginx.org/>`__ configuration file that 
     events {
       worker_connections  1024;
     }
-
     http {
       server {
         listen 80;
-
         location /my-datasette {
-          proxy_pass              http://127.0.0.1:8009/my-datasette;
-          proxy_set_header        X-Real-IP $remote_addr;
-          proxy_set_header        X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_pass http://127.0.0.1:8009/my-datasette;
+          proxy_set_header Host $host;
         }
       }
     }
+
+You can also use the ``--uds`` option to Datasette to listen on a Unix domain socket instead of a port, configuring the nginx upstream proxy like this::
+
+    daemon off;
+    events {
+      worker_connections  1024;
+    }
+    http {
+      server {
+        listen 80;
+        location / {
+          proxy_pass http://datasette;
+          proxy_set_header Host $host;
+        }
+      }
+      upstream datasette {
+        server unix:/tmp/datasette.sock;
+      }
+    }
+
+Then run Datasette with ``datasette --uds /tmp/datasette.sock path/to/database.db``.
 
 Apache proxy configuration
 --------------------------
