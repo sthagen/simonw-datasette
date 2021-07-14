@@ -65,7 +65,7 @@ You can start the Datasette process running using the following::
     sudo systemctl daemon-reload
     sudo systemctl start datasette.service
 
-You may need to restart the Datasette service after making changes to its ``metadata.json`` configuration or the ``datasette.service`` file. You can do that using::
+You will need to restart the Datasette service after making changes to its ``metadata.json`` configuration or adding a new database file to that directory. You can do that using::
 
     sudo systemctl restart datasette.service
 
@@ -163,8 +163,8 @@ You can also use the ``--uds`` option to Datasette to listen on a Unix domain so
     http {
       server {
         listen 80;
-        location / {
-          proxy_pass http://datasette;
+        location /my-datasette {
+          proxy_pass http://datasette/my-datasette;
           proxy_set_header Host $host;
         }
       }
@@ -173,7 +173,7 @@ You can also use the ``--uds`` option to Datasette to listen on a Unix domain so
       }
     }
 
-Then run Datasette with ``datasette --uds /tmp/datasette.sock path/to/database.db``.
+Then run Datasette with ``datasette --uds /tmp/datasette.sock path/to/database.db --setting base_url /my-datasette/``.
 
 Apache proxy configuration
 --------------------------
@@ -185,7 +185,11 @@ For `Apache <https://httpd.apache.org/>`__, you can use the ``ProxyPass`` direct
 
 Then add these directives to proxy traffic::
 
-    ProxyPass /datasette-prefix/ http://127.0.0.1:8009/datasette-prefix/
+    ProxyPass /my-datasette/ http://127.0.0.1:8009/my-datasette/
     ProxyPreserveHost On
+
+Using ``--uds`` you can use Unix domain sockets similiar to the nginx example::
+
+    ProxyPass /my-datasette/ unix:/tmp/datasette.sock|http://localhost/my-datasette/
 
 The `ProxyPreserveHost On <https://httpd.apache.org/docs/2.4/mod/mod_proxy.html#proxypreservehost>`__ directive ensures that the original ``Host:`` header from the incoming request is passed through to Datasette. Datasette needs this to correctly assemble links to other pages using the :ref:`datasette_absolute_url` method.
