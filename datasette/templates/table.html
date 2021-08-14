@@ -51,6 +51,14 @@
 
 {% block description_source_license %}{% include "_description_source_license.html" %}{% endblock %}
 
+{% if metadata.columns %}
+<dl class="column-descriptions">
+    {% for column_name, column_description in metadata.columns.items() %}
+        <dt>{{ column_name }}</dt><dd>{{ column_description }}</dd>
+    {% endfor %}
+</dl>
+{% endif %}
+
 {% if filtered_table_rows_count or human_description_en %}
     <h3>{% if filtered_table_rows_count or filtered_table_rows_count == 0 %}{{ "{:,}".format(filtered_table_rows_count) }} row{% if filtered_table_rows_count == 1 %}{% else %}s{% endif %}{% endif %}
         {% if human_description_en %}{{ human_description_en }}{% endif %}
@@ -193,7 +201,7 @@
                 CSV options:
                 <label><input type="checkbox" name="_dl"> download file</label>
                 {% if expandable_columns %}<label><input type="checkbox" name="_labels" checked> expand labels</label>{% endif %}
-                {% if next_url and config.allow_csv_stream %}<label><input type="checkbox" name="_stream"> stream all rows</label>{% endif %}
+                {% if next_url and settings.allow_csv_stream %}<label><input type="checkbox" name="_stream"> stream all rows</label>{% endif %}
                 <input type="submit" value="Export CSV">
                 {% for key, value in url_csv_hidden_args %}
                     <input type="hidden" name="{{ key }}" value="{{ value }}">
