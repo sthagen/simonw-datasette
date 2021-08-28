@@ -123,7 +123,11 @@ def sqlite_extensions(fn):
 @click.version_option(version=__version__)
 def cli():
     """
-    Datasette!
+    Datasette is an open source multi-tool for exploring and publishing data
+
+    \b
+    About Datasette: https://datasette.io/
+    Full documentation: https://docs.datasette.io/
     """
 
 
@@ -589,6 +593,9 @@ def serve(
     if ssl_certfile:
         uvicorn_kwargs["ssl_certfile"] = ssl_certfile
     uvicorn.run(ds.app(), **uvicorn_kwargs)
+
+
+pm.hook.register_commands(cli=cli)
 
 
 async def check_databases(ds):
