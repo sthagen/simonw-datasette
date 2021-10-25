@@ -4,6 +4,14 @@
 Changelog
 =========
 
+.. _v0_59_1:
+
+0.59.1 (2021-10-24)
+-------------------
+
+- Fix compatibility with Python 3.10. (:issue:`1482`)
+- Documentation on how to use :ref:`sql_parameters` with integer and floating point values. (:issue:`1496`)
+
 .. _v0_59:
 
 0.59 (2021-10-14)
@@ -20,7 +28,7 @@ Changelog
 - The ``base.html`` template now wraps everything other than the ``<footer>`` in a ``<div class="not-footer">`` element, to help with advanced CSS customization. (:issue:`1446`)
 - The :ref:`render_cell() <plugin_hook_render_cell>` plugin hook can now return an awaitable function. This means the hook can execute SQL queries. (:issue:`1425`)
 - :ref:`plugin_register_routes` plugin hook now accepts an optional ``datasette`` argument. (:issue:`1404`)
-- New ``hide_sql`` canned query option for defaulting to hiding the SQL quey used by a canned query, see :ref:`canned_queries_options`. (:issue:`1422`)
+- New ``hide_sql`` canned query option for defaulting to hiding the SQL query used by a canned query, see :ref:`canned_queries_options`. (:issue:`1422`)
 - New ``--cpu`` option for :ref:`datasette publish cloudrun <publish_cloud_run>`. (:issue:`1420`)
 - If `Rich <https://github.com/willmcgugan/rich>`__ is installed in the same virtual environment as Datasette, it will be used to provide enhanced display of error tracebacks on the console. (:issue:`1416`)
 - ``datasette.utils`` :ref:`internals_utils_parse_metadata` function, used by the new `datasette-remote-metadata plugin <https://datasette.io/plugins/datasette-remote-metadata>`__, is now a documented API. (:issue:`1405`)
