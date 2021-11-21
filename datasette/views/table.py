@@ -839,7 +839,7 @@ class TableView(RowTableShared):
             else:
                 added_args = {"_next": next_value}
             next_url = self.ds.absolute_url(
-                request, path_with_replaced_args(request, added_args)
+                request, self.ds.urls.path(path_with_replaced_args(request, added_args))
             )
             rows = rows[:page_size]
 
@@ -942,6 +942,7 @@ class TableView(RowTableShared):
                 "extra_wheres_for_ui": extra_wheres_for_ui,
                 "form_hidden_args": form_hidden_args,
                 "is_sortable": any(c["sortable"] for c in display_columns),
+                "fix_path": self.ds.urls.path,
                 "path_with_replaced_args": path_with_replaced_args,
                 "path_with_removed_args": path_with_removed_args,
                 "append_querystring": append_querystring,
