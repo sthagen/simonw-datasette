@@ -197,7 +197,7 @@ def test_database_page(app_client):
                     {
                         "other_table": "facetable",
                         "column": "id",
-                        "other_column": "city_id",
+                        "other_column": "_city_id",
                     }
                 ],
                 "outgoing": [],
@@ -212,7 +212,7 @@ def test_database_page(app_client):
                 "planet_int",
                 "on_earth",
                 "state",
-                "city_id",
+                "_city_id",
                 "_neighborhood",
                 "tags",
                 "complex_array",
@@ -227,7 +227,7 @@ def test_database_page(app_client):
                 "outgoing": [
                     {
                         "other_table": "facet_cities",
-                        "column": "city_id",
+                        "column": "_city_id",
                         "other_column": "id",
                     }
                 ],
@@ -1357,30 +1357,35 @@ def test_row_foreign_key_tables(app_client):
             "column": "id",
             "other_column": "foreign_key_with_blank_label",
             "count": 0,
+            "link": "/fixtures/foreign_key_references?foreign_key_with_blank_label=1",
         },
         {
             "other_table": "foreign_key_references",
             "column": "id",
             "other_column": "foreign_key_with_label",
             "count": 1,
+            "link": "/fixtures/foreign_key_references?foreign_key_with_label=1",
         },
         {
             "other_table": "complex_foreign_keys",
             "column": "id",
             "other_column": "f3",
             "count": 1,
+            "link": "/fixtures/complex_foreign_keys?f3=1",
         },
         {
             "other_table": "complex_foreign_keys",
             "column": "id",
             "other_column": "f2",
             "count": 0,
+            "link": "/fixtures/complex_foreign_keys?f2=1",
         },
         {
             "other_table": "complex_foreign_keys",
             "column": "id",
             "other_column": "f1",
             "count": 1,
+            "link": "/fixtures/complex_foreign_keys?f1=1",
         },
     ]
 
@@ -1512,40 +1517,40 @@ def test_page_size_matching_max_returned_rows(
     "path,expected_facet_results",
     [
         (
-            "/fixtures/facetable.json?_facet=state&_facet=city_id",
+            "/fixtures/facetable.json?_facet=state&_facet=_city_id",
             {
                 "state": {
                     "name": "state",
                     "hideable": True,
                     "type": "column",
-                    "toggle_url": "/fixtures/facetable.json?_facet=city_id",
+                    "toggle_url": "/fixtures/facetable.json?_facet=_city_id",
                     "results": [
                         {
                             "value": "CA",
                             "label": "CA",
                             "count": 10,
-                            "toggle_url": "_facet=state&_facet=city_id&state=CA",
+                            "toggle_url": "_facet=state&_facet=_city_id&state=CA",
                             "selected": False,
                         },
                         {
                             "value": "MI",
                             "label": "MI",
                             "count": 4,
-                            "toggle_url": "_facet=state&_facet=city_id&state=MI",
+                            "toggle_url": "_facet=state&_facet=_city_id&state=MI",
                             "selected": False,
                         },
                         {
                             "value": "MC",
                             "label": "MC",
                             "count": 1,
-                            "toggle_url": "_facet=state&_facet=city_id&state=MC",
+                            "toggle_url": "_facet=state&_facet=_city_id&state=MC",
                             "selected": False,
                         },
                     ],
                     "truncated": False,
                 },
-                "city_id": {
-                    "name": "city_id",
+                "_city_id": {
+                    "name": "_city_id",
                     "hideable": True,
                     "type": "column",
                     "toggle_url": "/fixtures/facetable.json?_facet=state",
@@ -1554,28 +1559,28 @@ def test_page_size_matching_max_returned_rows(
                             "value": 1,
                             "label": "San Francisco",
                             "count": 6,
-                            "toggle_url": "_facet=state&_facet=city_id&city_id=1",
+                            "toggle_url": "_facet=state&_facet=_city_id&_city_id__exact=1",
                             "selected": False,
                         },
                         {
                             "value": 2,
                             "label": "Los Angeles",
                             "count": 4,
-                            "toggle_url": "_facet=state&_facet=city_id&city_id=2",
+                            "toggle_url": "_facet=state&_facet=_city_id&_city_id__exact=2",
                             "selected": False,
                         },
                         {
                             "value": 3,
                             "label": "Detroit",
                             "count": 4,
-                            "toggle_url": "_facet=state&_facet=city_id&city_id=3",
+                            "toggle_url": "_facet=state&_facet=_city_id&_city_id__exact=3",
                             "selected": False,
                         },
                         {
                             "value": 4,
                             "label": "Memnonia",
                             "count": 1,
-                            "toggle_url": "_facet=state&_facet=city_id&city_id=4",
+                            "toggle_url": "_facet=state&_facet=_city_id&_city_id__exact=4",
                             "selected": False,
                         },
                     ],
@@ -1584,26 +1589,26 @@ def test_page_size_matching_max_returned_rows(
             },
         ),
         (
-            "/fixtures/facetable.json?_facet=state&_facet=city_id&state=MI",
+            "/fixtures/facetable.json?_facet=state&_facet=_city_id&state=MI",
             {
                 "state": {
                     "name": "state",
                     "hideable": True,
                     "type": "column",
-                    "toggle_url": "/fixtures/facetable.json?_facet=city_id&state=MI",
+                    "toggle_url": "/fixtures/facetable.json?_facet=_city_id&state=MI",
                     "results": [
                         {
                             "value": "MI",
                             "label": "MI",
                             "count": 4,
                             "selected": True,
-                            "toggle_url": "_facet=state&_facet=city_id",
+                            "toggle_url": "_facet=state&_facet=_city_id",
                         }
                     ],
                     "truncated": False,
                 },
-                "city_id": {
-                    "name": "city_id",
+                "_city_id": {
+                    "name": "_city_id",
                     "hideable": True,
                     "type": "column",
                     "toggle_url": "/fixtures/facetable.json?_facet=state&state=MI",
@@ -1613,7 +1618,7 @@ def test_page_size_matching_max_returned_rows(
                             "label": "Detroit",
                             "count": 4,
                             "selected": False,
-                            "toggle_url": "_facet=state&_facet=city_id&state=MI&city_id=3",
+                            "toggle_url": "_facet=state&_facet=_city_id&state=MI&_city_id__exact=3",
                         }
                     ],
                     "truncated": False,
@@ -1699,7 +1704,7 @@ def test_suggested_facets(app_client):
         {"name": "planet_int", "querystring": "_facet=planet_int"},
         {"name": "on_earth", "querystring": "_facet=on_earth"},
         {"name": "state", "querystring": "_facet=state"},
-        {"name": "city_id", "querystring": "_facet=city_id"},
+        {"name": "_city_id", "querystring": "_facet=_city_id"},
         {"name": "_neighborhood", "querystring": "_facet=_neighborhood"},
         {"name": "tags", "querystring": "_facet=tags"},
         {"name": "complex_array", "querystring": "_facet=complex_array"},
@@ -1765,7 +1770,7 @@ def test_expand_labels(app_client):
             "planet_int": 1,
             "on_earth": 1,
             "state": "CA",
-            "city_id": {"value": 1, "label": "San Francisco"},
+            "_city_id": {"value": 1, "label": "San Francisco"},
             "_neighborhood": "Dogpatch",
             "tags": '["tag1", "tag3"]',
             "complex_array": "[]",
@@ -1777,7 +1782,7 @@ def test_expand_labels(app_client):
             "planet_int": 1,
             "on_earth": 1,
             "state": "MI",
-            "city_id": {"value": 3, "label": "Detroit"},
+            "_city_id": {"value": 3, "label": "Detroit"},
             "_neighborhood": "Corktown",
             "tags": "[]",
             "complex_array": "[]",
@@ -2128,7 +2133,7 @@ def test_http_options_request(app_client):
                 "planet_int",
                 "on_earth",
                 "state",
-                "city_id",
+                "_city_id",
                 "_neighborhood",
                 "tags",
                 "complex_array",
@@ -2155,7 +2160,7 @@ def test_http_options_request(app_client):
                 "created",
                 "planet_int",
                 "on_earth",
-                "city_id",
+                "_city_id",
                 "_neighborhood",
                 "tags",
                 "complex_array",

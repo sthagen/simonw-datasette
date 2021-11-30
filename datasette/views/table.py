@@ -889,7 +889,11 @@ class TableView(RowTableShared):
 
             form_hidden_args = []
             for key in request.args:
-                if key.startswith("_") and key not in ("_sort", "_search", "_next"):
+                if (
+                    key.startswith("_")
+                    and key not in ("_sort", "_search", "_next")
+                    and not key.endswith("__exact")
+                ):
                     for value in request.args.getlist(key):
                         form_hidden_args.append((key, value))
 
@@ -1116,5 +1120,13 @@ class RowView(RowTableShared):
             count = (
                 foreign_table_counts.get((fk["other_table"], fk["other_column"])) or 0
             )
-            foreign_key_tables.append({**fk, **{"count": count}})
+            key = fk["other_column"]
+            if key.startswith("_"):
+                key += "__exact"
+            link = "{}?{}={}".format(
+                self.ds.urls.table(database, fk["other_table"]),
+                key,
+                ",".join(pk_values),
+            )
+            foreign_key_tables.append({**fk, **{"count": count, "link": link}})
         return foreign_key_tables
