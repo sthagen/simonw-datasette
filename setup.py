@@ -68,10 +68,10 @@ setup(
         "docs": ["sphinx_rtd_theme", "sphinx-autobuild", "codespell"],
         "test": [
             "pytest>=5.2.2,<6.3.0",
-            "pytest-xdist>=2.2.1,<2.5",
+            "pytest-xdist>=2.2.1,<2.6",
             "pytest-asyncio>=0.10,<0.17",
             "beautifulsoup4>=4.8.1,<4.11.0",
-            "black==21.11b1",
+            "black==21.12b0",
             "pytest-timeout>=1.4.2,<2.1",
             "trustme>=0.7,<0.10",
         ],
@@ -80,6 +80,7 @@ setup(
     tests_require=["datasette[test]"],
     classifiers=[
         "Development Status :: 4 - Beta",
+        "Framework :: Datasette",
         "Intended Audience :: Developers",
         "Intended Audience :: Science/Research",
         "Intended Audience :: End Users/Desktop",

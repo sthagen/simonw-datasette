@@ -3,7 +3,7 @@ from datasette.database import Database
 from datasette.facets import ColumnFacet, ArrayFacet, DateFacet
 from datasette.utils.asgi import Request
 from datasette.utils import detect_json1
-from .fixtures import app_client  # noqa
+from .fixtures import app_client, make_app_client  # noqa
 import json
 import pytest
 
@@ -107,8 +107,8 @@ async def test_column_facet_results(app_client):
     )
     buckets, timed_out = await facet.facet_results()
     assert [] == timed_out
-    assert {
-        "_city_id": {
+    assert [
+        {
             "name": "_city_id",
             "type": "column",
             "hideable": True,
@@ -145,7 +145,7 @@ async def test_column_facet_results(app_client):
             ],
             "truncated": False,
         }
-    } == buckets
+    ] == buckets
 
 
 @pytest.mark.asyncio
@@ -159,8 +159,8 @@ async def test_column_facet_results_column_starts_with_underscore(app_client):
     )
     buckets, timed_out = await facet.facet_results()
     assert [] == timed_out
-    assert buckets == {
-        "_neighborhood": {
+    assert buckets == [
+        {
             "name": "_neighborhood",
             "type": "column",
             "hideable": True,
@@ -267,7 +267,7 @@ async def test_column_facet_results_column_starts_with_underscore(app_client):
             ],
             "truncated": False,
         }
-    }
+    ]
 
 
 @pytest.mark.asyncio
@@ -282,8 +282,8 @@ async def test_column_facet_from_metadata_cannot_be_hidden(app_client):
     )
     buckets, timed_out = await facet.facet_results()
     assert [] == timed_out
-    assert {
-        "_city_id": {
+    assert [
+        {
             "name": "_city_id",
             "type": "column",
             "hideable": False,
@@ -320,7 +320,7 @@ async def test_column_facet_from_metadata_cannot_be_hidden(app_client):
             ],
             "truncated": False,
         }
-    } == buckets
+    ] == buckets
 
 
 @pytest.mark.asyncio
@@ -369,8 +369,8 @@ async def test_array_facet_results(app_client):
     )
     buckets, timed_out = await facet.facet_results()
     assert [] == timed_out
-    assert {
-        "tags": {
+    assert [
+        {
             "name": "tags",
             "type": "array",
             "results": [
@@ -400,7 +400,7 @@ async def test_array_facet_results(app_client):
             "toggle_url": "/",
             "truncated": False,
         }
-    } == buckets
+    ] == buckets
 
 
 @pytest.mark.asyncio
@@ -471,8 +471,8 @@ async def test_date_facet_results(app_client):
     )
     buckets, timed_out = await facet.facet_results()
     assert [] == timed_out
-    assert {
-        "created": {
+    assert [
+        {
             "name": "created",
             "type": "date",
             "results": [
@@ -509,7 +509,7 @@ async def test_date_facet_results(app_client):
             "toggle_url": "/",
             "truncated": False,
         }
-    } == buckets
+    ] == buckets
 
 
 @pytest.mark.asyncio
@@ -588,3 +588,39 @@ async def test_facet_size():
     )
     data5 = response5.json()
     assert len(data5["facet_results"]["city"]["results"]) == 20
+
+
+def test_other_types_of_facet_in_metadata():
+    with make_app_client(
+        metadata={
+            "databases": {
+                "fixtures": {
+                    "tables": {
+                        "facetable": {
+                            "facets": ["state", {"array": "tags"}, {"date": "created"}]
+                        }
+                    }
+                }
+            }
+        }
+    ) as client:
+        response = client.get("/fixtures/facetable")
+        for fragment in (
+            "<strong>created (date)\n",
+            "<strong>tags (array)\n",
+            "<strong>state\n",
+        ):
+            assert fragment in response.text
+
+
+def test_conflicting_facet_names_json(app_client):
+    response = app_client.get(
+        "/fixtures/facetable.json?_facet=created&_facet_date=created"
+        "&_facet=tags&_facet_array=tags"
+    )
+    assert set(response.json["facet_results"].keys()) == {
+        "created",
+        "tags",
+        "created_2",
+        "tags_2",
+    }
