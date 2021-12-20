@@ -397,6 +397,37 @@ async def test_execute_write_block_false(db):
 
 
 @pytest.mark.asyncio
+async def test_execute_write_script(db):
+    await db.execute_write_script(
+        "create table foo (id integer primary key); create table bar (id integer primary key); ",
+        block=True,
+    )
+    table_names = await db.table_names()
+    assert {"foo", "bar"}.issubset(table_names)
+
+
+@pytest.mark.asyncio
+async def test_execute_write_many(db):
+    await db.execute_write_script(
+        "create table foomany (id integer primary key)",
+        block=True,
+    )
+    await db.execute_write_many(
+        "insert into foomany (id) values (?)",
+        [(1,), (10,), (100,)],
+        block=True,
+    )
+    result = await db.execute("select * from foomany")
+    assert [r[0] for r in result.rows] == [1, 10, 100]
+
+
+@pytest.mark.asyncio
+async def test_execute_write_has_correctly_prepared_connection(db):
+    # The sleep() function is only available if ds._prepare_connection() was called
+    await db.execute_write("select sleep(0.01)", block=True)
+
+
+@pytest.mark.asyncio
 async def test_execute_write_fn_block_false(db):
     def write_fn(conn):
         with conn:

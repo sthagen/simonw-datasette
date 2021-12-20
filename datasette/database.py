@@ -99,7 +99,38 @@ class Database:
             with conn:
                 return conn.execute(sql, params or [])
 
-        return await self.execute_write_fn(_inner, block=block)
+        with trace("sql", database=self.name, sql=sql.strip(), params=params):
+            results = await self.execute_write_fn(_inner, block=block)
+        return results
+
+    async def execute_write_script(self, sql, block=False):
+        def _inner(conn):
+            with conn:
+                return conn.executescript(sql)
+
+        with trace("sql", database=self.name, sql=sql.strip(), executescript=True):
+            results = await self.execute_write_fn(_inner, block=block)
+        return results
+
+    async def execute_write_many(self, sql, params_seq, block=False):
+        def _inner(conn):
+            count = 0
+
+            def count_params(params):
+                nonlocal count
+                for param in params:
+                    count += 1
+                    yield param
+
+            with conn:
+                return conn.executemany(sql, count_params(params_seq)), count
+
+        with trace(
+            "sql", database=self.name, sql=sql.strip(), executemany=True
+        ) as kwargs:
+            results, count = await self.execute_write_fn(_inner, block=block)
+            kwargs["count"] = count
+        return results
 
     async def execute_write_fn(self, fn, block=False):
         task_id = uuid.uuid5(uuid.NAMESPACE_DNS, "datasette.io")
@@ -128,6 +159,7 @@ class Database:
         conn = None
         try:
             conn = self.connect(write=True)
+            self.ds._prepare_connection(conn, self.name)
         except Exception as e:
             conn_exception = e
         while True:

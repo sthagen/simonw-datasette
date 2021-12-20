@@ -191,7 +191,7 @@ class Datasette:
 
     def __init__(
         self,
-        files,
+        files=None,
         immutables=None,
         cache_headers=True,
         cors=False,
@@ -214,7 +214,7 @@ class Datasette:
         ), "config_dir= should be a pathlib.Path"
         self.pdb = pdb
         self._secret = secret or secrets.token_hex(32)
-        self.files = tuple(files) + tuple(immutables or [])
+        self.files = tuple(files or []) + tuple(immutables or [])
         if config_dir:
             self.files += tuple([str(p) for p in config_dir.glob("*.db")])
         if (
@@ -259,7 +259,6 @@ class Datasette:
             with metadata_files[0].open() as fp:
                 metadata = parse_metadata(fp.read())
         self._metadata_local = metadata or {}
-        self.sqlite_functions = []
         self.sqlite_extensions = []
         for extension in sqlite_extensions or []:
             # Resolve spatialite, if requested
@@ -548,8 +547,6 @@ class Datasette:
     def _prepare_connection(self, conn, database):
         conn.row_factory = sqlite3.Row
         conn.text_factory = lambda x: str(x, "utf-8", "replace")
-        for name, num_args, func in self.sqlite_functions:
-            conn.create_function(name, num_args, func)
         if self.sqlite_extensions:
             conn.enable_load_extension(True)
             for extension in self.sqlite_extensions:

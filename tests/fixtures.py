@@ -84,6 +84,13 @@ EXPECTED_PLUGINS = [
         "hooks": ["register_output_renderer"],
     },
     {
+        "name": "sleep_sql_function.py",
+        "static": False,
+        "templates": False,
+        "version": None,
+        "hooks": ["prepare_connection"],
+    },
+    {
         "name": "view_name.py",
         "static": False,
         "templates": False,
@@ -153,7 +160,6 @@ def make_app_client(
             template_dir=template_dir,
             crossdb=crossdb,
         )
-        ds.sqlite_functions.append(("sleep", 1, lambda n: time.sleep(float(n))))
         yield TestClient(ds)
 
 

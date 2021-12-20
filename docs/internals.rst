@@ -196,6 +196,27 @@ Datasette class
 
 This object is an instance of the ``Datasette`` class, passed to many plugin hooks as an argument called ``datasette``.
 
+You can create your own instance of this - for example to help write tests for a plugin - like so:
+
+.. code-block:: python
+
+    from datasette.app import Datasette
+
+    # With no arguments a single in-memory database will be attached
+    datasette = Datasette()
+
+    # The files= argument can load files from disk
+    datasette = Datasette(files=["/path/to/my-database.db"])
+
+    # Pass metadata as a JSON dictionary like this
+    datasette = Datasette(files=["/path/to/my-database.db"], metadata={
+        "databases": {
+            "my-database": {
+                "description": "This is my database"
+            }
+        }
+    })
+
 .. _datasette_databases:
 
 .databases
@@ -654,6 +675,28 @@ You can pass additional SQL parameters as a tuple or dictionary.
 By default queries are considered to be "fire and forget" - they will be added to the queue and executed in a separate thread while your code can continue to do other things. The method will return a UUID representing the queued task.
 
 If you pass ``block=True`` this behaviour changes: the method will block until the write operation has completed, and the return value will be the return from calling ``conn.execute(...)`` using the underlying ``sqlite3`` Python library.
+
+.. _database_execute_write_script:
+
+await db.execute_write_script(sql, block=False)
+-----------------------------------------------
+
+Like ``execute_write()`` but can be used to send multiple SQL statements in a single string separated by semicolons, using the ``sqlite3`` `conn.executescript() <https://docs.python.org/3/library/sqlite3.html#sqlite3.Cursor.executescript>`__ method.
+
+.. _database_execute_write_many:
+
+await db.execute_write_many(sql, params_seq, block=False)
+---------------------------------------------------------
+
+Like ``execute_write()`` but uses the ``sqlite3`` `conn.executemany() <https://docs.python.org/3/library/sqlite3.html#sqlite3.Cursor.executemany>`__ method. This will efficiently execute the same SQL statement against each of the parameters in the ``params_seq`` iterator, for example:
+
+.. code-block:: python
+
+    await db.execute_write_many(
+        "insert into characters (id, name) values (?, ?)",
+        [(1, "Melanie"), (2, "Selma"), (2, "Viktor")],
+        block=True,
+    )
 
 .. _database_execute_write_fn:
 
