@@ -143,17 +143,29 @@ def test_existing_filter_redirects(app_client):
     assert "?" not in response.headers["Location"]
 
 
-def test_exact_parameter_results_in_correct_hidden_fields(app_client):
+@pytest.mark.parametrize(
+    "qs,expected_hidden",
+    (
+        # Things that should be reflected in hidden form fields:
+        ("_facet=_neighborhood", {"_facet": "_neighborhood"}),
+        ("_where=1+=+1&_col=_city_id", {"_where": "1 = 1", "_col": "_city_id"}),
+        # Things that should NOT be reflected in hidden form fields:
+        (
+            "_facet=_neighborhood&_neighborhood__exact=Downtown",
+            {"_facet": "_neighborhood"},
+        ),
+        ("_facet=_neighborhood&_city_id__gt=1", {"_facet": "_neighborhood"}),
+    ),
+)
+def test_reflected_hidden_form_fields(app_client, qs, expected_hidden):
     # https://github.com/simonw/datasette/issues/1527
-    response = app_client.get(
-        "/fixtures/facetable?_facet=_neighborhood&_neighborhood__exact=Downtown"
-    )
+    response = app_client.get("/fixtures/facetable?{}".format(qs))
     # In this case we should NOT have a hidden _neighborhood__exact=Downtown field
     form = Soup(response.body, "html.parser").find("form")
     hidden_inputs = {
         input["name"]: input["value"] for input in form.select("input[type=hidden]")
     }
-    assert hidden_inputs == {"_facet": "_neighborhood"}
+    assert hidden_inputs == expected_hidden
 
 
 def test_empty_search_parameter_gets_removed(app_client):
@@ -1038,3 +1050,22 @@ def test_sort_rowid_with_next(app_client):
 
 def assert_querystring_equal(expected, actual):
     assert sorted(expected.split("&")) == sorted(actual.split("&"))
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    (
+        (
+            "/fixtures/facetable",
+            "fixtures: facetable: 15 rows",
+        ),
+        (
+            "/fixtures/facetable?on_earth__exact=1",
+            "fixtures: facetable: 14 rows where on_earth = 1",
+        ),
+    ),
+)
+def test_table_page_title(app_client, path, expected):
+    response = app_client.get(path)
+    title = Soup(response.text, "html.parser").find("title").text
+    assert title == expected

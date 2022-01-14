@@ -136,6 +136,12 @@ def cli():
 @click.option("--inspect-file", default="-")
 @sqlite_extensions
 def inspect(files, inspect_file, sqlite_extensions):
+    """
+    Generate JSON summary of provided database files
+
+    This can then be passed to "datasette --inspect-file" to speed up count
+    operations against immutable database files.
+    """
     app = Datasette([], immutables=files, sqlite_extensions=sqlite_extensions)
     loop = asyncio.get_event_loop()
     inspect_data = loop.run_until_complete(inspect_(files, sqlite_extensions))
@@ -184,7 +190,7 @@ pm.hook.publish_subcommand(publish=publish)
     help="Path to directory containing custom plugins",
 )
 def plugins(all, plugins_dir):
-    """List currently available plugins"""
+    """List currently installed plugins"""
     app = Datasette([], plugins_dir=plugins_dir)
     click.echo(json.dumps(app._plugins(all=all), indent=4))
 
@@ -301,7 +307,7 @@ def package(
     "-U", "--upgrade", is_flag=True, help="Upgrade packages to latest version"
 )
 def install(packages, upgrade):
-    """Install Python packages - e.g. Datasette plugins - into the same environment as Datasette"""
+    """Install plugins and packages from PyPI into the same environment as Datasette"""
     args = ["pip", "install"]
     if upgrade:
         args += ["--upgrade"]
@@ -314,7 +320,7 @@ def install(packages, upgrade):
 @click.argument("packages", nargs=-1, required=True)
 @click.option("-y", "--yes", is_flag=True, help="Don't ask for confirmation")
 def uninstall(packages, yes):
-    """Uninstall Python packages (e.g. plugins) from the Datasette environment"""
+    """Uninstall plugins and Python packages from the Datasette environment"""
     sys.argv = ["pip", "uninstall"] + list(packages) + (["-y"] if yes else [])
     run_module("pip", run_name="__main__")
 
@@ -394,7 +400,7 @@ def uninstall(packages, yes):
     "--setting",
     "settings",
     type=Setting(),
-    help="Setting, see docs.datasette.io/en/stable/config.html",
+    help="Setting, see docs.datasette.io/en/stable/settings.html",
     multiple=True,
 )
 @click.option(
