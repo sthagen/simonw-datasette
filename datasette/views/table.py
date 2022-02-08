@@ -17,6 +17,7 @@ from datasette.utils import (
     is_url,
     path_from_row_pks,
     path_with_added_args,
+    path_with_format,
     path_with_removed_args,
     path_with_replaced_args,
     to_css_class,
@@ -964,7 +965,6 @@ class RowView(RowTableShared):
             )
             for column in display_columns:
                 column["sortable"] = False
-
             return {
                 "foreign_key_tables": await self.foreign_key_tables(
                     database, table, pk_values

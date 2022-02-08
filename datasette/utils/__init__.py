@@ -12,6 +12,7 @@ import os
 import re
 import shlex
 import tempfile
+import typing
 import time
 import types
 import shutil
@@ -59,8 +60,17 @@ Column = namedtuple(
     "Column", ("cid", "name", "type", "notnull", "default_value", "is_pk", "hidden")
 )
 
+functions_marked_as_documented = []
 
-async def await_me_maybe(value):
+
+def documented(fn):
+    functions_marked_as_documented.append(fn)
+    return fn
+
+
+@documented
+async def await_me_maybe(value: typing.Any) -> typing.Any:
+    "If value is callable, call it. If awaitable, await it. Otherwise return it."
     if callable(value):
         value = value()
     if asyncio.iscoroutine(value):
@@ -915,7 +925,9 @@ class BadMetadataError(Exception):
     pass
 
 
-def parse_metadata(content):
+@documented
+def parse_metadata(content: str) -> dict:
+    "Detects if content is JSON or YAML and parses it appropriately."
     # content can be JSON or YAML
     try:
         return json.loads(content)
@@ -1094,3 +1106,4 @@ async def derive_named_parameters(db, sql):
 def add_cors_headers(headers):
     headers["Access-Control-Allow-Origin"] = "*"
     headers["Access-Control-Allow-Headers"] = "Authorization"
+    headers["Access-Control-Expose-Headers"] = "Link"

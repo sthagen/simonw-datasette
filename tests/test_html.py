@@ -110,12 +110,32 @@ def test_database_page_redirects_with_url_hash(app_client_with_hash):
 
 def test_database_page(app_client):
     response = app_client.get("/fixtures")
-    assert (
-        b"<p><em>pk, foreign_key_with_label, foreign_key_with_blank_label, "
-        b"foreign_key_with_no_label, foreign_key_compound_pk1, "
-        b"foreign_key_compound_pk2</em></p>"
-    ) in response.body
     soup = Soup(response.body, "html.parser")
+    # Should have a <textarea> for executing SQL
+    assert "<textarea" in response.text
+
+    # And a list of tables
+    for fragment in (
+        '<h2 id="tables">Tables</h2>',
+        '<h3><a href="/fixtures/sortable">sortable</a></h3>',
+        "<p><em>pk, foreign_key_with_label, foreign_key_with_blank_label, ",
+    ):
+        assert fragment in response.text
+
+    # And views
+    views_ul = soup.find("h2", text="Views").find_next_sibling("ul")
+    assert views_ul is not None
+    assert [
+        ("/fixtures/paginated_view", "paginated_view"),
+        ("/fixtures/searchable_view", "searchable_view"),
+        (
+            "/fixtures/searchable_view_configured_by_metadata",
+            "searchable_view_configured_by_metadata",
+        ),
+        ("/fixtures/simple_view", "simple_view"),
+    ] == sorted([(a["href"], a.text) for a in views_ul.find_all("a")])
+
+    # And a list of canned queries
     queries_ul = soup.find("h2", text="Queries").find_next_sibling("ul")
     assert queries_ul is not None
     assert [
@@ -850,3 +870,67 @@ def test_trace_correctly_escaped(app_client):
     response = app_client.get("/fixtures?sql=select+'<h1>Hello'&_trace=1")
     assert "select '<h1>Hello" not in response.text
     assert "select &#39;&lt;h1&gt;Hello" in response.text
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    (
+        # Instance index page
+        ("/", "http://localhost/.json"),
+        # Table page
+        ("/fixtures/facetable", "http://localhost/fixtures/facetable.json"),
+        (
+            "/fixtures/table%2Fwith%2Fslashes.csv",
+            "http://localhost/fixtures/table%2Fwith%2Fslashes.csv?_format=json",
+        ),
+        # Row page
+        (
+            "/fixtures/no_primary_key/1",
+            "http://localhost/fixtures/no_primary_key/1.json",
+        ),
+        # Database index page
+        (
+            "/fixtures",
+            "http://localhost/fixtures.json",
+        ),
+        # Custom query page
+        (
+            "/fixtures?sql=select+*+from+facetable",
+            "http://localhost/fixtures.json?sql=select+*+from+facetable",
+        ),
+        # Canned query page
+        (
+            "/fixtures/neighborhood_search?text=town",
+            "http://localhost/fixtures/neighborhood_search.json?text=town",
+        ),
+        # /-/ pages
+        (
+            "/-/plugins",
+            "http://localhost/-/plugins.json",
+        ),
+    ),
+)
+def test_alternate_url_json(app_client, path, expected):
+    response = app_client.get(path)
+    link = response.headers["link"]
+    assert link == '{}; rel="alternate"; type="application/json+datasette"'.format(
+        expected
+    )
+    assert (
+        '<link rel="alternate" type="application/json+datasette" href="{}">'.format(
+            expected
+        )
+        in response.text
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    ("/-/patterns", "/-/messages", "/-/allow-debug", "/fixtures.db"),
+)
+def test_no_alternate_url_json(app_client, path):
+    response = app_client.get(path)
+    assert "link" not in response.headers
+    assert (
+        '<link rel="alternate" type="application/json+datasette"' not in response.text
+    )
