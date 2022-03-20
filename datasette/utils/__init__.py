@@ -15,6 +15,7 @@ import tempfile
 import typing
 import time
 import types
+import secrets
 import shutil
 import urllib
 import yaml
@@ -51,9 +52,42 @@ SPATIALITE_PATHS = (
     "/usr/lib/x86_64-linux-gnu/mod_spatialite.so",
     "/usr/local/lib/mod_spatialite.dylib",
     "/usr/local/lib/mod_spatialite.so",
+    "/opt/homebrew/lib/mod_spatialite.dylib",
+)
+# Used to display /-/versions.json SpatiaLite information
+SPATIALITE_FUNCTIONS = (
+    "spatialite_version",
+    "spatialite_target_cpu",
+    "check_strict_sql_quoting",
+    "freexl_version",
+    "proj_version",
+    "geos_version",
+    "rttopo_version",
+    "libxml2_version",
+    "HasIconv",
+    "HasMathSQL",
+    "HasGeoCallbacks",
+    "HasProj",
+    "HasProj6",
+    "HasGeos",
+    "HasGeosAdvanced",
+    "HasGeosTrunk",
+    "HasGeosReentrant",
+    "HasGeosOnlyReentrant",
+    "HasMiniZip",
+    "HasRtTopo",
+    "HasLibXML2",
+    "HasEpsg",
+    "HasFreeXL",
+    "HasGeoPackage",
+    "HasGCP",
+    "HasTopology",
+    "HasKNN",
+    "HasRouting",
 )
 # Length of hash subset used in hashed URLs:
 HASH_LENGTH = 7
+
 
 # Can replace this with Column from sqlite_utils when I add that dependency
 Column = namedtuple(
@@ -79,12 +113,12 @@ async def await_me_maybe(value: typing.Any) -> typing.Any:
 
 
 def urlsafe_components(token):
-    """Splits token on commas and URL decodes each component"""
-    return [urllib.parse.unquote_plus(b) for b in token.split(",")]
+    """Splits token on commas and tilde-decodes each component"""
+    return [tilde_decode(b) for b in token.split(",")]
 
 
 def path_from_row_pks(row, pks, use_rowid, quote=True):
-    """Generate an optionally URL-quoted unique identifier
+    """Generate an optionally tilde-encoded unique identifier
     for a row from its primary keys."""
     if use_rowid:
         bits = [row["rowid"]]
@@ -93,7 +127,7 @@ def path_from_row_pks(row, pks, use_rowid, quote=True):
             row[pk]["value"] if isinstance(row[pk], dict) else row[pk] for pk in pks
         ]
     if quote:
-        bits = [urllib.parse.quote_plus(str(bit)) for bit in bits]
+        bits = [tilde_encode(str(bit)) for bit in bits]
     else:
         bits = [str(bit) for bit in bits]
 
@@ -697,26 +731,6 @@ def module_from_path(path, name):
     return mod
 
 
-async def resolve_table_and_format(
-    table_and_format, table_exists, allowed_formats=None
-):
-    if allowed_formats is None:
-        allowed_formats = []
-    if "." in table_and_format:
-        # Check if a table exists with this exact name
-        it_exists = await table_exists(table_and_format)
-        if it_exists:
-            return table_and_format, None
-
-    # Check if table ends with a known format
-    formats = list(allowed_formats) + ["csv", "jsono"]
-    for _format in formats:
-        if table_and_format.endswith(f".{_format}"):
-            table = table_and_format[: -(len(_format) + 1)]
-            return table, _format
-    return table_and_format, None
-
-
 def path_with_format(
     *, request=None, path=None, format=None, extra_qs=None, replace_format=None
 ):
@@ -1107,3 +1121,48 @@ def add_cors_headers(headers):
     headers["Access-Control-Allow-Origin"] = "*"
     headers["Access-Control-Allow-Headers"] = "Authorization"
     headers["Access-Control-Expose-Headers"] = "Link"
+
+
+_TILDE_ENCODING_SAFE = frozenset(
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    b"abcdefghijklmnopqrstuvwxyz"
+    b"0123456789_-"
+    # This is the same as Python percent-encoding but I removed
+    # '.' and '~'
+)
+
+
+class TildeEncoder(dict):
+    # Keeps a cache internally, via __missing__
+    def __missing__(self, b):
+        # Handle a cache miss, store encoded string in cache and return.
+        res = chr(b) if b in _TILDE_ENCODING_SAFE else "~{:02X}".format(b)
+        self[b] = res
+        return res
+
+
+_tilde_encoder = TildeEncoder().__getitem__
+
+
+@documented
+def tilde_encode(s: str) -> str:
+    "Returns tilde-encoded string - for example ``/foo/bar`` -> ``~2Ffoo~2Fbar``"
+    return "".join(_tilde_encoder(char) for char in s.encode("utf-8"))
+
+
+@documented
+def tilde_decode(s: str) -> str:
+    "Decodes a tilde-encoded string, so ``~2Ffoo~2Fbar`` -> ``/foo/bar``"
+    # Avoid accidentally decoding a %2f style sequence
+    temp = secrets.token_hex(16)
+    s = s.replace("%", temp)
+    decoded = urllib.parse.unquote(s.replace("~", "%"))
+    return decoded.replace(temp, "%")
+
+
+def resolve_routes(routes, path):
+    for regex, view in routes:
+        match = regex.match(path)
+        if match is not None:
+            return match, view
+    return None, None

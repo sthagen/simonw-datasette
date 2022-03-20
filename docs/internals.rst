@@ -217,12 +217,18 @@ You can create your own instance of this - for example to help write tests for a
         }
     })
 
+Constructor parameters include:
+
+- ``files=[...]`` - a list of database files to open
+- ``immutables=[...]`` - a list of database files to open in immutable mode
+- ``metadata={...}`` - a dictionary of :ref:`metadata`
+
 .. _datasette_databases:
 
 .databases
 ----------
 
-Property exposing an ordered dictionary of databases currently connected to Datasette.
+Property exposing a ``collections.OrderedDict`` of databases currently connected to Datasette.
 
 The dictionary keys are the name of the database that is used in the URL - e.g. ``/fixtures`` would have a key of ``"fixtures"``. The values are :ref:`internals_database` instances.
 
@@ -301,14 +307,17 @@ Returns the specified database object. Raises a ``KeyError`` if the database doe
 
 .. _datasette_add_database:
 
-.add_database(db, name=None)
-----------------------------
+.add_database(db, name=None, route=None)
+----------------------------------------
 
 ``db`` - datasette.database.Database instance
     The database to be attached.
 
 ``name`` - string, optional
-    The name to be used for this database - this will be used in the URL path, e.g. ``/dbname``. If not specified Datasette will pick one based on the filename or memory name.
+    The name to be used for this database . If not specified Datasette will pick one based on the filename or memory name.
+
+``route`` - string, optional
+    This will be used in the URL path. If not specified, it will default to the same thing as the ``name``.
 
 The ``datasette.add_database(db)`` method lets you add a new database to the current Datasette instance.
 
@@ -365,7 +374,7 @@ Using either of these pattern will result in the in-memory database being served
 ``name`` - string
     The name of the database to be removed.
 
-This removes a database that has been previously added. ``name=`` is the unique name of that database, used in its URL path.
+This removes a database that has been previously added. ``name=`` is the unique name of that database.
 
 .. _datasette_sign:
 
@@ -545,7 +554,7 @@ These functions can be accessed via the ``{{ urls }}`` object in Datasette templ
     <a href="{{ urls.table("fixtures", "facetable") }}">facetable table</a>
     <a href="{{ urls.query("fixtures", "pragma_cache_size") }}">pragma_cache_size query</a>
 
-Use the ``format="json"`` (or ``"csv"`` or other formats supported by plugins) arguments to get back URLs to the JSON representation. This is usually the path with ``.json`` added on the end, but it may use ``?_format=json`` in cases where the path already includes ``.json``, for example a URL to a table named ``table.json``.
+Use the ``format="json"`` (or ``"csv"`` or other formats supported by plugins) arguments to get back URLs to the JSON representation. This is the path with ``.json`` added on the end.
 
 These methods each return a ``datasette.utils.PrefixedUrlString`` object, which is a subclass of the Python ``str`` type. This allows the logic that considers the ``base_url`` setting to detect if that prefix has already been applied to the path.
 
@@ -581,6 +590,13 @@ The arguments are as follows:
     Use this to create a named in-memory database. Unlike regular memory databases these can be accessed by multiple threads and will persist an changes made to them for the lifetime of the Datasette server process.
 
 The first argument is the ``datasette`` instance you are attaching to, the second is a ``path=``, then ``is_mutable`` and ``is_memory`` are both optional arguments.
+
+.. _database_hash:
+
+db.hash
+-------
+
+If the database was opened in immutable mode, this property returns the 64 character SHA-256 hash of the database contents as a string. Otherwise it returns ``None``.
 
 .. _database_execute:
 
@@ -875,6 +891,32 @@ await_me_maybe(value)
 Utility function for calling ``await`` on a return value if it is awaitable, otherwise returning the value. This is used by Datasette to support plugin hooks that can optionally return awaitable functions. Read more about this function in `The “await me maybe” pattern for Python asyncio <https://simonwillison.net/2020/Sep/2/await-me-maybe/>`__.
 
 .. autofunction:: datasette.utils.await_me_maybe
+
+.. _internals_tilde_encoding:
+
+Tilde encoding
+--------------
+
+Datasette uses a custom encoding scheme in some places, called **tilde encoding**. This is primarily used for table names and row primary keys, to avoid any confusion between ``/`` characters in those values and the Datasette URLs that reference them.
+
+Tilde encoding uses the same algorithm as `URL percent-encoding <https://developer.mozilla.org/en-US/docs/Glossary/percent-encoding>`__, but with the ``~`` tilde character used in place of ``%``.
+
+Any character other than ``ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789_-`` will be replaced by the numeric equivalent preceded by a tilde. For example:
+
+- ``/`` becomes ``~2F``
+- ``.`` becomes ``~2E``
+- ``%`` becomes ``~25``
+- ``~`` becomes ``~7E``
+- Space character becomes ``~20``
+- ``polls/2022.primary`` becomes ``polls~2F2022~2Eprimary``
+
+.. _internals_utils_tilde_encode:
+
+.. autofunction:: datasette.utils.tilde_encode
+
+.. _internals_utils_tilde_decode:
+
+.. autofunction:: datasette.utils.tilde_decode
 
 .. _internals_tracer:
 

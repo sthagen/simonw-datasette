@@ -46,6 +46,7 @@ from .database import Database, QueryInterrupted
 
 from .utils import (
     PrefixedUrlString,
+    SPATIALITE_FUNCTIONS,
     StartupError,
     add_cors_headers,
     async_call_with_supported_arguments,
@@ -59,6 +60,7 @@ from .utils import (
     module_from_path,
     parse_metadata,
     resolve_env_secrets,
+    resolve_routes,
     to_css_class,
 )
 from .utils.asgi import (
@@ -118,11 +120,6 @@ SETTINGS = (
         "Time limit for calculating a suggested facet",
     ),
     Setting(
-        "hash_urls",
-        False,
-        "Include DB file contents hash in URLs, for far-future caching",
-    ),
-    Setting(
         "allow_facet",
         True,
         "Allow users to specify columns to facet using ?_facet= parameter",
@@ -137,11 +134,6 @@ SETTINGS = (
         "default_cache_ttl",
         5,
         "Default HTTP cache TTL (used in Cache-Control: max-age= header)",
-    ),
-    Setting(
-        "default_cache_ttl_hashed",
-        365 * 24 * 60 * 60,
-        "Default HTTP cache TTL for hashed URL pages",
     ),
     Setting("cache_size_kb", 0, "SQLite cache size in KB (0 == use SQLite default)"),
     Setting(
@@ -176,7 +168,11 @@ SETTINGS = (
     ),
     Setting("base_url", "/", "Datasette URLs should use this base path"),
 )
-
+_HASH_URLS_REMOVED = "The hash_urls setting has been removed, try the datasette-hashed-urls plugin instead"
+OBSOLETE_SETTINGS = {
+    "hash_urls": _HASH_URLS_REMOVED,
+    "default_cache_ttl_hashed": _HASH_URLS_REMOVED,
+}
 DEFAULT_SETTINGS = {option.name: option.default for option in SETTINGS}
 
 FAVICON_PATH = app_root / "datasette" / "static" / "favicon.png"
@@ -392,13 +388,18 @@ class Datasette:
     def unsign(self, signed, namespace="default"):
         return URLSafeSerializer(self._secret, namespace).loads(signed)
 
-    def get_database(self, name=None):
+    def get_database(self, name=None, route=None):
+        if route is not None:
+            matches = [db for db in self.databases.values() if db.route == route]
+            if not matches:
+                raise KeyError
+            return matches[0]
         if name is None:
-            # Return first no-_schemas database
+            # Return first database that isn't "_internal"
             name = [key for key in self.databases.keys() if key != "_internal"][0]
         return self.databases[name]
 
-    def add_database(self, db, name=None):
+    def add_database(self, db, name=None, route=None):
         new_databases = self.databases.copy()
         if name is None:
             # Pick a unique name for this database
@@ -411,6 +412,7 @@ class Datasette:
             name = "{}_{}".format(suggestion, i)
             i += 1
         db.name = name
+        db.route = route or name
         new_databases[name] = db
         # don't mutate! that causes race conditions with live import
         self.databases = new_databases
@@ -697,6 +699,7 @@ class Datasette:
         return [
             {
                 "name": d.name,
+                "route": d.route,
                 "path": d.path,
                 "size": d.size,
                 "is_mutable": d.is_mutable,
@@ -724,6 +727,17 @@ class Datasette:
                     sqlite_extensions[extension] = None
             except Exception:
                 pass
+        # More details on SpatiaLite
+        if "spatialite" in sqlite_extensions:
+            spatialite_details = {}
+            for fn in SPATIALITE_FUNCTIONS:
+                try:
+                    result = conn.execute("select {}()".format(fn))
+                    spatialite_details[fn] = result.fetchone()[0]
+                except Exception as e:
+                    spatialite_details[fn] = {"error": str(e)}
+            sqlite_extensions["spatialite"] = spatialite_details
+
         # Figure out supported FTS versions
         fts_versions = []
         for fts in ("FTS5", "FTS4", "FTS3"):
@@ -968,8 +982,7 @@ class Datasette:
             output.append(script)
         return output
 
-    def app(self):
-        """Returns an ASGI app function that serves the whole of Datasette"""
+    def _routes(self):
         routes = []
 
         for routes_to_add in pm.hook.register_routes(datasette=self):
@@ -979,10 +992,7 @@ class Datasette:
         def add_route(view, regex):
             routes.append((regex, view))
 
-        # Generate a regex snippet to match all registered renderer file extensions
-        renderer_regex = "|".join(r"\." + key for key in self.renderers.keys())
-
-        add_route(IndexView.as_view(self), r"/(?P<as_format>(\.jsono?)?$)")
+        add_route(IndexView.as_view(self), r"/(\.(?P<format>jsono?))?$")
         # TODO: /favicon.ico and /-/static/ deserve far-future cache expires
         add_route(favicon, "/favicon.ico")
 
@@ -1014,21 +1024,21 @@ class Datasette:
         )
         add_route(
             JsonDataView.as_view(self, "metadata.json", lambda: self.metadata()),
-            r"/-/metadata(?P<as_format>(\.json)?)$",
+            r"/-/metadata(\.(?P<format>json))?$",
         )
         add_route(
             JsonDataView.as_view(self, "versions.json", self._versions),
-            r"/-/versions(?P<as_format>(\.json)?)$",
+            r"/-/versions(\.(?P<format>json))?$",
         )
         add_route(
             JsonDataView.as_view(
                 self, "plugins.json", self._plugins, needs_request=True
             ),
-            r"/-/plugins(?P<as_format>(\.json)?)$",
+            r"/-/plugins(\.(?P<format>json))?$",
         )
         add_route(
             JsonDataView.as_view(self, "settings.json", lambda: self._settings),
-            r"/-/settings(?P<as_format>(\.json)?)$",
+            r"/-/settings(\.(?P<format>json))?$",
         )
         add_route(
             permanent_redirect("/-/settings.json"),
@@ -1040,15 +1050,15 @@ class Datasette:
         )
         add_route(
             JsonDataView.as_view(self, "threads.json", self._threads),
-            r"/-/threads(?P<as_format>(\.json)?)$",
+            r"/-/threads(\.(?P<format>json))?$",
         )
         add_route(
             JsonDataView.as_view(self, "databases.json", self._connected_databases),
-            r"/-/databases(?P<as_format>(\.json)?)$",
+            r"/-/databases(\.(?P<format>json))?$",
         )
         add_route(
             JsonDataView.as_view(self, "actor.json", self._actor, needs_request=True),
-            r"/-/actor(?P<as_format>(\.json)?)$",
+            r"/-/actor(\.(?P<format>json))?$",
         )
         add_route(
             AuthTokenView.as_view(self),
@@ -1074,25 +1084,27 @@ class Datasette:
             PatternPortfolioView.as_view(self),
             r"/-/patterns$",
         )
+        add_route(DatabaseDownload.as_view(self), r"/(?P<database>[^\/\.]+)\.db$")
         add_route(
-            DatabaseDownload.as_view(self), r"/(?P<db_name>[^/]+?)(?P<as_db>\.db)$"
-        )
-        add_route(
-            DatabaseView.as_view(self),
-            r"/(?P<db_name>[^/]+?)(?P<as_format>"
-            + renderer_regex
-            + r"|.jsono|\.csv)?$",
+            DatabaseView.as_view(self), r"/(?P<database>[^\/\.]+)(\.(?P<format>\w+))?$"
         )
         add_route(
             TableView.as_view(self),
-            r"/(?P<db_name>[^/]+)/(?P<table_and_format>[^/]+?$)",
+            r"/(?P<database>[^\/\.]+)/(?P<table>[^\/\.]+)(\.(?P<format>\w+))?$",
         )
         add_route(
             RowView.as_view(self),
-            r"/(?P<db_name>[^/]+)/(?P<table>[^/]+?)/(?P<pk_path>[^/]+?)(?P<as_format>"
-            + renderer_regex
-            + r")?$",
+            r"/(?P<database>[^\/\.]+)/(?P<table>[^/]+?)/(?P<pks>[^/]+?)(\.(?P<format>\w+))?$",
         )
+        return [
+            # Compile any strings to regular expressions
+            ((re.compile(pattern) if isinstance(pattern, str) else pattern), view)
+            for pattern, view in routes
+        ]
+
+    def app(self):
+        """Returns an ASGI app function that serves the whole of Datasette"""
+        routes = self._routes()
         self._register_custom_units()
 
         async def setup_db():
@@ -1123,12 +1135,7 @@ class Datasette:
 class DatasetteRouter:
     def __init__(self, datasette, routes):
         self.ds = datasette
-        routes = routes or []
-        self.routes = [
-            # Compile any strings to regular expressions
-            ((re.compile(pattern) if isinstance(pattern, str) else pattern), view)
-            for pattern, view in routes
-        ]
+        self.routes = routes or []
         # Build a list of pages/blah/{name}.html matching expressions
         pattern_templates = [
             filepath
@@ -1181,24 +1188,38 @@ class DatasetteRouter:
                 break
         scope_modifications["actor"] = actor or default_actor
         scope = dict(scope, **scope_modifications)
-        for regex, view in self.routes:
-            match = regex.match(path)
-            if match is not None:
-                new_scope = dict(scope, url_route={"kwargs": match.groupdict()})
-                request.scope = new_scope
-                try:
-                    response = await view(request, send)
-                    if response:
-                        self.ds._write_messages_to_response(request, response)
-                        await response.asgi_send(send)
-                    return
-                except NotFound as exception:
-                    return await self.handle_404(request, send, exception)
-                except Exception as exception:
-                    return await self.handle_500(request, send, exception)
-        return await self.handle_404(request, send)
+
+        match, view = resolve_routes(self.routes, path)
+
+        if match is None:
+            return await self.handle_404(request, send)
+
+        new_scope = dict(scope, url_route={"kwargs": match.groupdict()})
+        request.scope = new_scope
+        try:
+            response = await view(request, send)
+            if response:
+                self.ds._write_messages_to_response(request, response)
+                await response.asgi_send(send)
+            return
+        except NotFound as exception:
+            return await self.handle_404(request, send, exception)
+        except Exception as exception:
+            return await self.handle_500(request, send, exception)
 
     async def handle_404(self, request, send, exception=None):
+        # If path contains % encoding, redirect to tilde encoding
+        if "%" in request.path:
+            # Try the same path but with "%" replaced by "~"
+            # and "~" replaced with "~7E"
+            # and "." replaced with "~2E"
+            new_path = (
+                request.path.replace("~", "~7E").replace("%", "~").replace(".", "~2E")
+            )
+            if request.query_string:
+                new_path += "?{}".format(request.query_string)
+            await asgi_send_redirect(send, new_path)
+            return
         # If URL has a trailing slash, redirect to URL without it
         path = request.scope.get(
             "raw_path", request.scope["path"].encode("utf8")

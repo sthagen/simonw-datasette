@@ -42,7 +42,7 @@ setup(
     include_package_data=True,
     python_requires=">=3.7",
     install_requires=[
-        "asgiref>=3.2.10,<3.5.0",
+        "asgiref>=3.2.10,<3.6.0",
         "click>=7.1.1,<8.1.0",
         "click-default-group~=1.2.2",
         "Jinja2>=2.10.3,<3.1.0",
@@ -67,12 +67,12 @@ setup(
     extras_require={
         "docs": ["sphinx_rtd_theme", "sphinx-autobuild", "codespell"],
         "test": [
-            "pytest>=5.2.2,<6.3.0",
+            "pytest>=5.2.2,<7.2.0",
             "pytest-xdist>=2.2.1,<2.6",
-            "pytest-asyncio>=0.10,<0.17",
+            "pytest-asyncio>=0.17,<0.19",
             "beautifulsoup4>=4.8.1,<4.11.0",
             "black==22.1.0",
-            "pytest-timeout>=1.4.2,<2.1",
+            "pytest-timeout>=1.4.2,<2.2",
             "trustme>=0.7,<0.10",
             "cogapp>=3.3.0",
         ],

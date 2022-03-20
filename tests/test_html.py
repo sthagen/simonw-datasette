@@ -5,7 +5,6 @@ from .fixtures import (  # noqa
     app_client_base_url_prefix,
     app_client_shorter_time_limit,
     app_client_two_attached_databases,
-    app_client_with_hash,
     make_app_client,
     METADATA,
 )
@@ -29,7 +28,7 @@ def test_homepage(app_client_two_attached_databases):
     )
     # Should be two attached databases
     assert [
-        {"href": r"/extra%20database", "text": "extra database"},
+        {"href": "/extra~20database", "text": "extra database"},
         {"href": "/fixtures", "text": "fixtures"},
     ] == [{"href": a["href"], "text": a.text.strip()} for a in soup.select("h2 a")]
     # Database should show count text and attached tables
@@ -44,8 +43,8 @@ def test_homepage(app_client_two_attached_databases):
         {"href": a["href"], "text": a.text.strip()} for a in links_p.findAll("a")
     ]
     assert [
-        {"href": r"/extra%20database/searchable", "text": "searchable"},
-        {"href": r"/extra%20database/searchable_view", "text": "searchable_view"},
+        {"href": r"/extra~20database/searchable", "text": "searchable"},
+        {"href": r"/extra~20database/searchable_view", "text": "searchable_view"},
     ] == table_links
 
 
@@ -101,13 +100,6 @@ def test_not_allowed_methods():
             assert response.status == 405
 
 
-def test_database_page_redirects_with_url_hash(app_client_with_hash):
-    response = app_client_with_hash.get("/fixtures")
-    assert response.status == 302
-    response = app_client_with_hash.get("/fixtures", follow_redirects=True)
-    assert "fixtures" in response.text
-
-
 def test_database_page(app_client):
     response = app_client.get("/fixtures")
     soup = Soup(response.body, "html.parser")
@@ -139,15 +131,15 @@ def test_database_page(app_client):
     queries_ul = soup.find("h2", text="Queries").find_next_sibling("ul")
     assert queries_ul is not None
     assert [
-        (
-            "/fixtures/%F0%9D%90%9C%F0%9D%90%A2%F0%9D%90%AD%F0%9D%90%A2%F0%9D%90%9E%F0%9D%90%AC",
-            "𝐜𝐢𝐭𝐢𝐞𝐬",
-        ),
         ("/fixtures/from_async_hook", "from_async_hook"),
         ("/fixtures/from_hook", "from_hook"),
         ("/fixtures/magic_parameters", "magic_parameters"),
         ("/fixtures/neighborhood_search#fragment-goes-here", "Search neighborhoods"),
         ("/fixtures/pragma_cache_size", "pragma_cache_size"),
+        (
+            "/fixtures/~F0~9D~90~9C~F0~9D~90~A2~F0~9D~90~AD~F0~9D~90~A2~F0~9D~90~9E~F0~9D~90~AC",
+            "𝐜𝐢𝐭𝐢𝐞𝐬",
+        ),
     ] == sorted(
         [(a["href"], a.text) for a in queries_ul.find_all("a")], key=lambda p: p[0]
     )
@@ -182,26 +174,6 @@ def test_sql_time_limit(app_client_shorter_time_limit):
     assert expected_html_fragment in response.text
 
 
-def test_row_redirects_with_url_hash(app_client_with_hash):
-    response = app_client_with_hash.get("/fixtures/simple_primary_key/1")
-    assert response.status == 302
-    assert response.headers["Location"].endswith("/1")
-    response = app_client_with_hash.get(
-        "/fixtures/simple_primary_key/1", follow_redirects=True
-    )
-    assert response.status == 200
-
-
-def test_row_strange_table_name_with_url_hash(app_client_with_hash):
-    response = app_client_with_hash.get("/fixtures/table%2Fwith%2Fslashes.csv/3")
-    assert response.status == 302
-    assert response.headers["Location"].endswith("/table%2Fwith%2Fslashes.csv/3")
-    response = app_client_with_hash.get(
-        "/fixtures/table%2Fwith%2Fslashes.csv/3", follow_redirects=True
-    )
-    assert response.status == 200
-
-
 def test_row_page_does_not_truncate():
     with make_app_client(settings={"truncate_cells_html": 5}) as client:
         response = client.get("/fixtures/facetable/1")
@@ -229,7 +201,7 @@ def test_row_page_does_not_truncate():
             ["query", "db-fixtures", "query-neighborhood_search"],
         ),
         (
-            "/fixtures/table%2Fwith%2Fslashes.csv",
+            "/fixtures/table~2Fwith~2Fslashes~2Ecsv",
             ["table", "db-fixtures", "table-tablewithslashescsv-fa7563"],
         ),
         (
@@ -255,7 +227,7 @@ def test_css_classes_on_body(app_client, path, expected_classes):
             "table-fixtures-simple_primary_key.html, *table.html",
         ),
         (
-            "/fixtures/table%2Fwith%2Fslashes.csv",
+            "/fixtures/table~2Fwith~2Fslashes~2Ecsv",
             "table-fixtures-tablewithslashescsv-fa7563.html, *table.html",
         ),
         (
@@ -345,19 +317,37 @@ def test_row_links_from_other_tables(app_client, path, expected_text, expected_l
     assert link == expected_link
 
 
-def test_row_html_compound_primary_key(app_client):
-    response = app_client.get("/fixtures/compound_primary_key/a,b")
+@pytest.mark.parametrize(
+    "path,expected",
+    (
+        (
+            "/fixtures/compound_primary_key/a,b",
+            [
+                [
+                    '<td class="col-pk1 type-str">a</td>',
+                    '<td class="col-pk2 type-str">b</td>',
+                    '<td class="col-content type-str">c</td>',
+                ]
+            ],
+        ),
+        (
+            "/fixtures/compound_primary_key/a~2Fb,~2Ec~2Dd",
+            [
+                [
+                    '<td class="col-pk1 type-str">a/b</td>',
+                    '<td class="col-pk2 type-str">.c-d</td>',
+                    '<td class="col-content type-str">c</td>',
+                ]
+            ],
+        ),
+    ),
+)
+def test_row_html_compound_primary_key(app_client, path, expected):
+    response = app_client.get(path)
     assert response.status == 200
     table = Soup(response.body, "html.parser").find("table")
     assert ["pk1", "pk2", "content"] == [
         th.string.strip() for th in table.select("thead th")
-    ]
-    expected = [
-        [
-            '<td class="col-pk1 type-str">a</td>',
-            '<td class="col-pk2 type-str">b</td>',
-            '<td class="col-content type-str">c</td>',
-        ]
     ]
     assert expected == [
         [str(td) for td in tr.select("td")] for tr in table.select("tbody tr")
@@ -798,7 +788,8 @@ def test_base_url_affects_metadata_extra_css_urls(app_client_base_url_prefix):
         ),
         ("/fixtures/pragma_cache_size", None),
         (
-            "/fixtures/𝐜𝐢𝐭𝐢𝐞𝐬",
+            # /fixtures/𝐜𝐢𝐭𝐢𝐞𝐬
+            "/fixtures/~F0~9D~90~9C~F0~9D~90~A2~F0~9D~90~AD~F0~9D~90~A2~F0~9D~90~9E~F0~9D~90~AC",
             "/fixtures?sql=select+id%2C+name+from+facet_cities+order+by+id+limit+1%3B",
         ),
         ("/fixtures/magic_parameters", None),
@@ -806,6 +797,7 @@ def test_base_url_affects_metadata_extra_css_urls(app_client_base_url_prefix):
 )
 def test_edit_sql_link_on_canned_queries(app_client, path, expected):
     response = app_client.get(path)
+    assert response.status == 200
     expected_link = f'<a href="{expected}" class="canned-query-edit-sql">Edit SQL</a>'
     if expected:
         assert expected_link in response.text
@@ -880,8 +872,8 @@ def test_trace_correctly_escaped(app_client):
         # Table page
         ("/fixtures/facetable", "http://localhost/fixtures/facetable.json"),
         (
-            "/fixtures/table%2Fwith%2Fslashes.csv",
-            "http://localhost/fixtures/table%2Fwith%2Fslashes.csv?_format=json",
+            "/fixtures/table~2Fwith~2Fslashes~2Ecsv",
+            "http://localhost/fixtures/table~2Fwith~2Fslashes~2Ecsv.json",
         ),
         # Row page
         (
@@ -912,6 +904,7 @@ def test_trace_correctly_escaped(app_client):
 )
 def test_alternate_url_json(app_client, path, expected):
     response = app_client.get(path)
+    assert response.status == 200
     link = response.headers["link"]
     assert link == '{}; rel="alternate"; type="application/json+datasette"'.format(
         expected
@@ -934,3 +927,24 @@ def test_no_alternate_url_json(app_client, path):
     assert (
         '<link rel="alternate" type="application/json+datasette"' not in response.text
     )
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    (
+        (
+            "/fivethirtyeight/twitter-ratio%2Fsenators",
+            "/fivethirtyeight/twitter-ratio~2Fsenators",
+        ),
+        (
+            "/fixtures/table%2Fwith%2Fslashes.csv",
+            "/fixtures/table~2Fwith~2Fslashes~2Ecsv",
+        ),
+        # query string should be preserved
+        ("/foo/bar%2Fbaz?id=5", "/foo/bar~2Fbaz?id=5"),
+    ),
+)
+def test_redirect_percent_encoding_to_tilde_encoding(app_client, path, expected):
+    response = app_client.get(path)
+    assert response.status == 302
+    assert response.headers["location"] == expected

@@ -12,6 +12,8 @@ from datasette.utils import (
     MultiParams,
     append_querystring,
     compound_keys_after_sql,
+    tilde_decode,
+    tilde_encode,
     escape_sqlite,
     filters_should_redirect,
     is_url,
@@ -139,10 +141,9 @@ class RowTableShared(DataView):
                         "is_special_link_column": is_special_link_column,
                         "raw": pk_path,
                         "value": markupsafe.Markup(
-                            '<a href="{base_url}{database}/{table}/{flat_pks_quoted}">{flat_pks}</a>'.format(
+                            '<a href="{table_path}/{flat_pks_quoted}">{flat_pks}</a>'.format(
                                 base_url=base_url,
-                                database=database,
-                                table=urllib.parse.quote_plus(table),
+                                table_path=self.ds.urls.table(database, table),
                                 flat_pks=str(markupsafe.escape(pk_path)),
                                 flat_pks_quoted=path_from_row_pks(row, pks, not pks),
                             )
@@ -199,8 +200,8 @@ class RowTableShared(DataView):
                         link_template.format(
                             database=database,
                             base_url=base_url,
-                            table=urllib.parse.quote_plus(other_table),
-                            link_id=urllib.parse.quote_plus(str(value)),
+                            table=tilde_encode(other_table),
+                            link_id=tilde_encode(str(value)),
                             id=str(markupsafe.escape(value)),
                             label=str(markupsafe.escape(label)) or "-",
                         )
@@ -269,20 +270,23 @@ class RowTableShared(DataView):
 class TableView(RowTableShared):
     name = "table"
 
-    async def post(self, request, db_name, table_and_format):
+    async def post(self, request):
+        database_route = tilde_decode(request.url_vars["database"])
+        try:
+            db = self.ds.get_database(route=database_route)
+        except KeyError:
+            raise NotFound("Database not found: {}".format(database_route))
+        database = db.name
+        table = tilde_decode(request.url_vars["table"])
         # Handle POST to a canned query
-        canned_query = await self.ds.get_canned_query(
-            db_name, table_and_format, request.actor
-        )
+        canned_query = await self.ds.get_canned_query(database, table, request.actor)
         assert canned_query, "You may only POST to a canned query"
         return await QueryView(self.ds).data(
             request,
-            db_name,
-            None,
             canned_query["sql"],
             metadata=canned_query,
             editable=False,
-            canned_query=table_and_format,
+            canned_query=table,
             named_parameters=canned_query.get("params"),
             write=bool(canned_query.get("write")),
         )
@@ -323,20 +327,23 @@ class TableView(RowTableShared):
     async def data(
         self,
         request,
-        database,
-        hash,
-        table,
         default_labels=False,
         _next=None,
         _size=None,
     ):
+        database_route = tilde_decode(request.url_vars["database"])
+        table = tilde_decode(request.url_vars["table"])
+        try:
+            db = self.ds.get_database(route=database_route)
+        except KeyError:
+            raise NotFound("Database not found: {}".format(database_route))
+        database = db.name
+
         # If this is a canned query, not a table, then dispatch to QueryView instead
         canned_query = await self.ds.get_canned_query(database, table, request.actor)
         if canned_query:
             return await QueryView(self.ds).data(
                 request,
-                database,
-                hash,
                 canned_query["sql"],
                 metadata=canned_query,
                 editable=False,
@@ -345,7 +352,6 @@ class TableView(RowTableShared):
                 write=bool(canned_query.get("write")),
             )
 
-        db = self.ds.databases[database]
         is_view = bool(await db.get_view_definition(table))
         table_exists = bool(await db.table_exists(table))
 
@@ -765,7 +771,7 @@ class TableView(RowTableShared):
                 if prefix is None:
                     prefix = "$null"
                 else:
-                    prefix = urllib.parse.quote_plus(str(prefix))
+                    prefix = tilde_encode(str(prefix))
                 next_value = f"{prefix},{next_value}"
                 added_args = {"_next": next_value}
                 if sort:
@@ -936,7 +942,14 @@ async def _sql_params_pks(db, table, pk_values):
 class RowView(RowTableShared):
     name = "row"
 
-    async def data(self, request, database, hash, table, pk_path, default_labels=False):
+    async def data(self, request, default_labels=False):
+        database_route = tilde_decode(request.url_vars["database"])
+        table = tilde_decode(request.url_vars["table"])
+        try:
+            db = self.ds.get_database(route=database_route)
+        except KeyError:
+            raise NotFound("Database not found: {}".format(database_route))
+        database = db.name
         await self.check_permissions(
             request,
             [
@@ -945,8 +958,12 @@ class RowView(RowTableShared):
                 "view-instance",
             ],
         )
-        pk_values = urlsafe_components(pk_path)
-        db = self.ds.databases[database]
+        pk_values = urlsafe_components(request.url_vars["pks"])
+        try:
+            db = self.ds.get_database(route=database_route)
+        except KeyError:
+            raise NotFound("Database not found: {}".format(database_route))
+        database = db.name
         sql, params, pks = await _sql_params_pks(db, table, pk_values)
         results = await db.execute(sql, params, truncate=True)
         columns = [r[0] for r in results.description]

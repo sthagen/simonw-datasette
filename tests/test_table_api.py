@@ -2,7 +2,6 @@ from datasette.utils import detect_json1
 from datasette.utils.sqlite import sqlite_version
 from .fixtures import (  # noqa
     app_client,
-    app_client_with_hash,
     app_client_with_trace,
     app_client_returned_rows_matches_page_size,
     generate_compound_rows,
@@ -39,13 +38,6 @@ def test_table_not_exists_json(app_client):
         "status": 404,
         "title": None,
     } == app_client.get("/fixtures/blah.json").json
-
-
-def test_jsono_redirects_to_shape_objects(app_client_with_hash):
-    response_1 = app_client_with_hash.get("/fixtures/simple_primary_key.jsono")
-    response = app_client_with_hash.get(response_1.headers["Location"])
-    assert response.status == 302
-    assert response.headers["Location"].endswith("?_shape=objects")
 
 
 def test_table_shape_arrays(app_client):
@@ -136,12 +128,15 @@ def test_table_shape_object(app_client):
 
 def test_table_shape_object_compound_primary_key(app_client):
     response = app_client.get("/fixtures/compound_primary_key.json?_shape=object")
-    assert {"a,b": {"pk1": "a", "pk2": "b", "content": "c"}} == response.json
+    assert response.json == {
+        "a,b": {"pk1": "a", "pk2": "b", "content": "c"},
+        "a~2Fb,~2Ec-d": {"pk1": "a/b", "pk2": ".c-d", "content": "c"},
+    }
 
 
 def test_table_with_slashes_in_name(app_client):
     response = app_client.get(
-        "/fixtures/table%2Fwith%2Fslashes.csv?_shape=objects&_format=json"
+        "/fixtures/table~2Fwith~2Fslashes~2Ecsv.json?_shape=objects"
     )
     assert response.status == 200
     data = response.json
@@ -308,7 +303,7 @@ def test_sortable(app_client, query_string, sort_key, human_description_en):
         path = response.json["next_url"]
         if path:
             path = path.replace("http://localhost", "")
-    assert 5 == page
+    assert page == 5
     expected = list(generate_sortable_rows(201))
     expected.sort(key=sort_key)
     assert [r["content"] for r in expected] == [r["content"] for r in fetched]
@@ -537,6 +532,7 @@ def test_table_filter_json_arraycontains(app_client):
             '["tag1", "tag2"]',
             '[{"foo": "bar"}]',
             "one",
+            "n1",
         ],
         [
             2,
@@ -549,6 +545,7 @@ def test_table_filter_json_arraycontains(app_client):
             '["tag1", "tag3"]',
             "[]",
             "two",
+            "n2",
         ],
     ]
 
@@ -570,6 +567,7 @@ def test_table_filter_json_arraynotcontains(app_client):
             '["tag1", "tag2"]',
             '[{"foo": "bar"}]',
             "one",
+            "n1",
         ]
     ]
 
@@ -590,6 +588,7 @@ def test_table_filter_extra_where(app_client):
             '["tag1", "tag3"]',
             "[]",
             "two",
+            "n2",
         ]
     ] == response.json["rows"]
 
@@ -963,6 +962,7 @@ def test_expand_labels(app_client):
             "tags": '["tag1", "tag3"]',
             "complex_array": "[]",
             "distinct_some_null": "two",
+            "n": "n2",
         },
         "13": {
             "pk": 13,
@@ -975,6 +975,7 @@ def test_expand_labels(app_client):
             "tags": "[]",
             "complex_array": "[]",
             "distinct_some_null": None,
+            "n": None,
         },
     } == response.json
 
@@ -1029,7 +1030,10 @@ def test_infinity_returned_as_invalid_json_if_requested(app_client):
 
 
 def test_custom_query_with_unicode_characters(app_client):
-    response = app_client.get("/fixtures/𝐜𝐢𝐭𝐢𝐞𝐬.json?_shape=array")
+    # /fixtures/𝐜𝐢𝐭𝐢𝐞𝐬.json
+    response = app_client.get(
+        "/fixtures/~F0~9D~90~9C~F0~9D~90~A2~F0~9D~90~AD~F0~9D~90~A2~F0~9D~90~9E~F0~9D~90~AC.json?_shape=array"
+    )
     assert [{"id": 1, "name": "San Francisco"}] == response.json
 
 
@@ -1163,6 +1167,7 @@ def test_generated_columns_are_visible_in_datasette():
                 "tags",
                 "complex_array",
                 "distinct_some_null",
+                "n",
             ],
         ),
         (
@@ -1190,6 +1195,7 @@ def test_generated_columns_are_visible_in_datasette():
                 "tags",
                 "complex_array",
                 "distinct_some_null",
+                "n",
             ],
         ),
         (

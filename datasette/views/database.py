@@ -12,6 +12,7 @@ from datasette.utils import (
     await_me_maybe,
     check_visibility,
     derive_named_parameters,
+    tilde_decode,
     to_css_class,
     validate_sql_select,
     is_url,
@@ -21,7 +22,7 @@ from datasette.utils import (
     sqlite3,
     InvalidSql,
 )
-from datasette.utils.asgi import AsgiFileDownload, Response, Forbidden
+from datasette.utils.asgi import AsgiFileDownload, NotFound, Response, Forbidden
 from datasette.plugins import pm
 
 from .base import DatasetteError, DataView
@@ -30,7 +31,14 @@ from .base import DatasetteError, DataView
 class DatabaseView(DataView):
     name = "database"
 
-    async def data(self, request, database, hash, default_labels=False, _size=None):
+    async def data(self, request, default_labels=False, _size=None):
+        database_route = tilde_decode(request.url_vars["database"])
+        try:
+            db = self.ds.get_database(route=database_route)
+        except KeyError:
+            raise NotFound("Database not found: {}".format(database_route))
+        database = db.name
+
         await self.check_permissions(
             request,
             [
@@ -45,10 +53,8 @@ class DatabaseView(DataView):
             sql = request.args.get("sql")
             validate_sql_select(sql)
             return await QueryView(self.ds).data(
-                request, database, hash, sql, _size=_size, metadata=metadata
+                request, sql, _size=_size, metadata=metadata
             )
-
-        db = self.ds.databases[database]
 
         table_counts = await db.table_counts(5)
         hidden_table_names = set(await db.hidden_table_names())
@@ -156,7 +162,8 @@ class DatabaseView(DataView):
 class DatabaseDownload(DataView):
     name = "database_download"
 
-    async def view_get(self, request, database, hash, correct_hash_present, **kwargs):
+    async def get(self, request):
+        database = tilde_decode(request.url_vars["database"])
         await self.check_permissions(
             request,
             [
@@ -165,9 +172,10 @@ class DatabaseDownload(DataView):
                 "view-instance",
             ],
         )
-        if database not in self.ds.databases:
+        try:
+            db = self.ds.get_database(route=database)
+        except KeyError:
             raise DatasetteError("Invalid database", status=404)
-        db = self.ds.databases[database]
         if db.is_memory:
             raise DatasetteError("Cannot download in-memory databases", status=404)
         if not self.ds.setting("allow_download") or db.is_mutable:
@@ -191,8 +199,6 @@ class QueryView(DataView):
     async def data(
         self,
         request,
-        database,
-        hash,
         sql,
         editable=True,
         canned_query=None,
@@ -201,6 +207,7 @@ class QueryView(DataView):
         named_parameters=None,
         write=False,
     ):
+        database = tilde_decode(request.url_vars["database"])
         params = {key: request.args.get(key) for key in request.args}
         if "sql" in params:
             params.pop("sql")
