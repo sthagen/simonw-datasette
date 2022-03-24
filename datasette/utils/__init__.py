@@ -182,15 +182,16 @@ class CustomJSONEncoder(json.JSONEncoder):
 def sqlite_timelimit(conn, ms):
     deadline = time.perf_counter() + (ms / 1000)
     # n is the number of SQLite virtual machine instructions that will be
-    # executed between each check. It's hard to know what to pick here.
-    # After some experimentation, I've decided to go with 1000 by default and
-    # 1 for time limits that are less than 50ms
+    # executed between each check. It takes about 0.08ms to execute 1000.
+    # https://github.com/simonw/datasette/issues/1679
     n = 1000
-    if ms < 50:
+    if ms <= 20:
+        # This mainly happens while executing our test suite
         n = 1
 
     def handler():
         if time.perf_counter() >= deadline:
+            # Returning 1 terminates the query with an error
             return 1
 
     conn.set_progress_handler(handler, n)
@@ -1000,25 +1001,6 @@ def actor_matches_allow(actor, allow):
         if actor_values.intersection(values):
             return True
     return False
-
-
-async def check_visibility(datasette, actor, action, resource, default=True):
-    """Returns (visible, private) - visible = can you see it, private = can others see it too"""
-    visible = await datasette.permission_allowed(
-        actor,
-        action,
-        resource=resource,
-        default=default,
-    )
-    if not visible:
-        return False, False
-    private = not await datasette.permission_allowed(
-        None,
-        action,
-        resource=resource,
-        default=default,
-    )
-    return visible, private
 
 
 def resolve_env_secrets(config, environ):

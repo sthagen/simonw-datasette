@@ -10,7 +10,6 @@ import markupsafe
 from datasette.utils import (
     add_cors_headers,
     await_me_maybe,
-    check_visibility,
     derive_named_parameters,
     tilde_decode,
     to_css_class,
@@ -39,8 +38,8 @@ class DatabaseView(DataView):
             raise NotFound("Database not found: {}".format(database_route))
         database = db.name
 
-        await self.check_permissions(
-            request,
+        await self.ds.ensure_permissions(
+            request.actor,
             [
                 ("view-database", database),
                 "view-instance",
@@ -62,8 +61,7 @@ class DatabaseView(DataView):
 
         views = []
         for view_name in await db.view_names():
-            visible, private = await check_visibility(
-                self.ds,
+            visible, private = await self.ds.check_visibility(
                 request.actor,
                 "view-table",
                 (database, view_name),
@@ -78,8 +76,7 @@ class DatabaseView(DataView):
 
         tables = []
         for table in table_counts:
-            visible, private = await check_visibility(
-                self.ds,
+            visible, private = await self.ds.check_visibility(
                 request.actor,
                 "view-table",
                 (database, table),
@@ -105,8 +102,7 @@ class DatabaseView(DataView):
         for query in (
             await self.ds.get_canned_queries(database, request.actor)
         ).values():
-            visible, private = await check_visibility(
-                self.ds,
+            visible, private = await self.ds.check_visibility(
                 request.actor,
                 "view-query",
                 (database, query["name"]),
@@ -164,8 +160,8 @@ class DatabaseDownload(DataView):
 
     async def get(self, request):
         database = tilde_decode(request.url_vars["database"])
-        await self.check_permissions(
-            request,
+        await self.ds.ensure_permissions(
+            request.actor,
             [
                 ("view-database-download", database),
                 ("view-database", database),
@@ -207,7 +203,12 @@ class QueryView(DataView):
         named_parameters=None,
         write=False,
     ):
-        database = tilde_decode(request.url_vars["database"])
+        database_route = tilde_decode(request.url_vars["database"])
+        try:
+            db = self.ds.get_database(route=database_route)
+        except KeyError:
+            raise NotFound("Database not found: {}".format(database_route))
+        database = db.name
         params = {key: request.args.get(key) for key in request.args}
         if "sql" in params:
             params.pop("sql")
@@ -217,8 +218,8 @@ class QueryView(DataView):
         private = False
         if canned_query:
             # Respect canned query permissions
-            await self.check_permissions(
-                request,
+            await self.ds.ensure_permissions(
+                request.actor,
                 [
                     ("view-query", (database, canned_query)),
                     ("view-database", database),
@@ -229,7 +230,7 @@ class QueryView(DataView):
                 None, "view-query", (database, canned_query), default=True
             )
         else:
-            await self.check_permission(request, "execute-sql", database)
+            await self.ds.ensure_permissions(request.actor, [("execute-sql", database)])
 
         # Extract any :named parameters
         named_parameters = named_parameters or await derive_named_parameters(
