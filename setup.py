@@ -43,7 +43,7 @@ setup(
     python_requires=">=3.7",
     install_requires=[
         "asgiref>=3.2.10,<3.6.0",
-        "click>=7.1.1,<8.1.0",
+        "click>=7.1.1,<8.2.0",
         "click-default-group~=1.2.2",
         "Jinja2>=2.10.3,<3.1.0",
         "hupper~=1.9",
@@ -70,7 +70,7 @@ setup(
             "pytest>=5.2.2,<7.2.0",
             "pytest-xdist>=2.2.1,<2.6",
             "pytest-asyncio>=0.17,<0.19",
-            "beautifulsoup4>=4.8.1,<4.11.0",
+            "beautifulsoup4>=4.8.1,<4.12.0",
             "black==22.1.0",
             "pytest-timeout>=1.4.2,<2.2",
             "trustme>=0.7,<0.10",

@@ -1,3 +1,4 @@
+from datasette.app import Datasette, Database
 from bs4 import BeautifulSoup as Soup
 from .fixtures import (  # noqa
     app_client,
@@ -1075,3 +1076,42 @@ def test_table_page_title(app_client, path, expected):
     response = app_client.get(path)
     title = Soup(response.text, "html.parser").find("title").text
     assert title == expected
+
+
+@pytest.mark.parametrize("allow_facet", (True, False))
+def test_allow_facet_off(allow_facet):
+    with make_app_client(settings={"allow_facet": allow_facet}) as client:
+        response = client.get("/fixtures/facetable")
+        expected = "DATASETTE_ALLOW_FACET = {};".format(
+            "true" if allow_facet else "false"
+        )
+        assert expected in response.text
+        if allow_facet:
+            assert "Suggested facets" in response.text
+        else:
+            assert "Suggested facets" not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "size,title,length_bytes",
+    (
+        (2000, ' title="2.0 KB"', "2,000"),
+        (20000, ' title="19.5 KB"', "20,000"),
+        (20, "", "20"),
+    ),
+)
+async def test_format_of_binary_links(size, title, length_bytes):
+    ds = Datasette()
+    db_name = "binary-links-{}".format(size)
+    db = ds.add_memory_database(db_name)
+    sql = "select zeroblob({}) as blob".format(size)
+    await db.execute_write("create table blobs as {}".format(sql))
+    response = await ds.client.get("/{}/blobs".format(db_name))
+    assert response.status_code == 200
+    expected = "{}>&lt;Binary:&nbsp;{}&nbsp;bytes&gt;</a>".format(title, length_bytes)
+    assert expected in response.text
+    # And test with arbitrary SQL query too
+    sql_response = await ds.client.get("/{}".format(db_name), params={"sql": sql})
+    assert sql_response.status_code == 200
+    assert expected in sql_response.text

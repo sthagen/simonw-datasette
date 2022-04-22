@@ -60,6 +60,33 @@ The object also has two awaitable methods:
 ``await request.post_body()`` - bytes
     Returns the un-parsed body of a request submitted by ``POST`` - useful for things like incoming JSON data.
 
+And a class method that can be used to create fake request objects for use in tests:
+
+``fake(path_with_query_string, method="GET", scheme="http", url_vars=None)``
+    Returns a ``Request`` instance for the specified path and method. For example:
+
+    .. code-block:: python
+
+        from datasette import Request
+        from pprint import pprint
+
+        request = Request.fake("/fixtures/facetable/", url_vars={
+            "database": "fixtures",
+            "table": "facetable"
+        })
+        pprint(request.scope)
+
+    This outputs::
+
+        {'http_version': '1.1',
+         'method': 'GET',
+         'path': '/fixtures/facetable/',
+         'query_string': b'',
+         'raw_path': b'/fixtures/facetable/',
+         'scheme': 'http',
+         'type': 'http',
+         'url_route': {'kwargs': {'database': 'fixtures', 'table': 'facetable'}}}
+
 .. _internals_multiparams:
 
 The MultiParams class
@@ -458,8 +485,8 @@ Returns the original, decoded object that was passed to :ref:`datasette_sign`. I
 
 .. _datasette_add_message:
 
-.add_message(request, message, message_type=datasette.INFO)
------------------------------------------------------------
+.add_message(request, message, type=datasette.INFO)
+---------------------------------------------------
 
 ``request`` - Request
     The current Request object
@@ -467,7 +494,7 @@ Returns the original, decoded object that was passed to :ref:`datasette_sign`. I
 ``message`` - string
     The message string
 
-``message_type`` - constant, optional
+``type`` - constant, optional
     The message type - ``datasette.INFO``, ``datasette.WARNING`` or ``datasette.ERROR``
 
 Datasette's flash messaging mechanism allows you to add a message that will be displayed to the user on the next page that they visit. Messages are persisted in a ``ds_messages`` cookie. This method adds a message to that cookie.
@@ -953,14 +980,16 @@ Datasette uses a custom encoding scheme in some places, called **tilde encoding*
 
 Tilde encoding uses the same algorithm as `URL percent-encoding <https://developer.mozilla.org/en-US/docs/Glossary/percent-encoding>`__, but with the ``~`` tilde character used in place of ``%``.
 
-Any character other than ``ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789_-`` will be replaced by the numeric equivalent preceded by a tilde. For example:
+Any character other than ``ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz0123456789_-`` will be replaced by the numeric equivalent preceded by a tilde. For example:
 
 - ``/`` becomes ``~2F``
 - ``.`` becomes ``~2E``
 - ``%`` becomes ``~25``
 - ``~`` becomes ``~7E``
-- Space character becomes ``~20``
+- Space becomes ``+``
 - ``polls/2022.primary`` becomes ``polls~2F2022~2Eprimary``
+
+Note that the space character is a special case: it will be replaced with a ``+`` symbol.
 
 .. _internals_utils_tilde_encode:
 
