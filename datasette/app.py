@@ -26,7 +26,6 @@ from itsdangerous import URLSafeSerializer
 from jinja2 import ChoiceLoader, Environment, FileSystemLoader, PrefixLoader
 from jinja2.environment import Template
 from jinja2.exceptions import TemplateNotFound
-import uvicorn
 
 from .views.base import DatasetteError, ureg
 from .views.database import DatabaseDownload, DatabaseView
@@ -289,9 +288,12 @@ class Datasette:
         self._settings = dict(DEFAULT_SETTINGS, **(settings or {}))
         self.renderers = {}  # File extension -> (renderer, can_render) functions
         self.version_note = version_note
-        self.executor = futures.ThreadPoolExecutor(
-            max_workers=self.setting("num_sql_threads")
-        )
+        if self.setting("num_sql_threads") == 0:
+            self.executor = None
+        else:
+            self.executor = futures.ThreadPoolExecutor(
+                max_workers=self.setting("num_sql_threads")
+            )
         self.max_returned_rows = self.setting("max_returned_rows")
         self.sql_time_limit_ms = self.setting("sql_time_limit_ms")
         self.page_size = self.setting("default_page_size")
@@ -806,6 +808,15 @@ class Datasette:
         datasette_version = {"version": __version__}
         if self.version_note:
             datasette_version["note"] = self.version_note
+
+        try:
+            # Optional import to avoid breaking Pyodide
+            # https://github.com/simonw/datasette/issues/1733#issuecomment-1115268245
+            import uvicorn
+
+            uvicorn_version = uvicorn.__version__
+        except ImportError:
+            uvicorn_version = None
         info = {
             "python": {
                 "version": ".".join(map(str, sys.version_info[:3])),
@@ -813,7 +824,7 @@ class Datasette:
             },
             "datasette": datasette_version,
             "asgi": "3.0",
-            "uvicorn": uvicorn.__version__,
+            "uvicorn": uvicorn_version,
             "sqlite": {
                 "version": sqlite_version,
                 "fts_versions": fts_versions,
@@ -854,6 +865,8 @@ class Datasette:
         ]
 
     def _threads(self):
+        if self.setting("num_sql_threads") == 0:
+            return {"num_threads": 0, "threads": []}
         threads = list(threading.enumerate())
         d = {
             "num_threads": len(threads),
