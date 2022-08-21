@@ -874,7 +874,7 @@ canned_queries(datasette, database, actor)
 ``actor`` - dictionary or None
     The currently authenticated :ref:`actor <authentication_actor>`.
 
-Ues this hook to return a dictionary of additional :ref:`canned query <canned_queries>` definitions for the specified database. The return value should be the same shape as the JSON described in the :ref:`canned query <canned_queries>` documentation.
+Use this hook to return a dictionary of additional :ref:`canned query <canned_queries>` definitions for the specified database. The return value should be the same shape as the JSON described in the :ref:`canned query <canned_queries>` documentation.
 
 .. code-block:: python
 
@@ -1260,6 +1260,8 @@ This example logs an error to `Sentry <https://sentry.io/>`__ and then renders a
             )
 
         return inner
+
+Example: `datasette-sentry <https://datasette.io/plugins/datasette-sentry>`_
 
 .. _plugin_hook_menu_links:
 
