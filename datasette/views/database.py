@@ -20,6 +20,7 @@ from datasette.utils import (
     path_with_format,
     path_with_removed_args,
     sqlite3,
+    truncate_url,
     InvalidSql,
 )
 from datasette.utils.asgi import AsgiFileDownload, NotFound, Response, Forbidden
@@ -371,6 +372,7 @@ class QueryView(DataView):
 
         async def extra_template():
             display_rows = []
+            truncate_cells = self.ds.setting("truncate_cells_html")
             for row in results.rows if results else []:
                 display_row = []
                 for column, value in zip(results.columns, row):
@@ -396,9 +398,12 @@ class QueryView(DataView):
                         if value in ("", None):
                             display_value = Markup("&nbsp;")
                         elif is_url(str(display_value).strip()):
-                            display_value = Markup(
-                                '<a href="{url}">{url}</a>'.format(
-                                    url=escape(value.strip())
+                            display_value = markupsafe.Markup(
+                                '<a href="{url}">{truncated_url}</a>'.format(
+                                    url=markupsafe.escape(value.strip()),
+                                    truncated_url=markupsafe.escape(
+                                        truncate_url(value.strip(), truncate_cells)
+                                    ),
                                 )
                             )
                         elif isinstance(display_value, bytes):
@@ -423,7 +428,12 @@ class QueryView(DataView):
                                     "" if len(value) == 1 else "s",
                                 )
                             )
-
+                        else:
+                            display_value = str(value)
+                            if truncate_cells and len(display_value) > truncate_cells:
+                                display_value = (
+                                    display_value[:truncate_cells] + "\u2026"
+                                )
                     display_row.append(display_value)
                 display_rows.append(display_row)
 

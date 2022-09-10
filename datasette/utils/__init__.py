@@ -834,6 +834,18 @@ class StaticMount(click.ParamType):
         return path, dirpath
 
 
+# The --load-extension parameter can optionally include a specific entrypoint.
+# This is done by appending ":entrypoint_name" after supplying the path to the extension
+class LoadExtension(click.ParamType):
+    name = "path:entrypoint?"
+
+    def convert(self, value, param, ctx):
+        if ":" not in value:
+            return value
+        path, entrypoint = value.split(":", 1)
+        return path, entrypoint
+
+
 def format_bytes(bytes):
     current = float(bytes)
     for unit in ("bytes", "KB", "MB", "GB", "TB"):
@@ -1155,3 +1167,13 @@ def resolve_routes(routes, path):
         if match is not None:
             return match, view
     return None, None
+
+
+def truncate_url(url, length):
+    if (not length) or (len(url) <= length):
+        return url
+    bits = url.rsplit(".", 1)
+    if len(bits) == 2 and 1 <= len(bits[1]) <= 4 and "/" not in bits[1]:
+        rest, ext = bits
+        return rest[: length - 1 - len(ext)] + "…." + ext
+    return url[: length - 1] + "…"

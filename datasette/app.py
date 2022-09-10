@@ -231,7 +231,17 @@ class Datasette:
         self.inspect_data = inspect_data
         self.immutables = set(immutables or [])
         self.databases = collections.OrderedDict()
-        self._refresh_schemas_lock = asyncio.Lock()
+        try:
+            self._refresh_schemas_lock = asyncio.Lock()
+        except RuntimeError as rex:
+            # Workaround for intermittent test failure, see:
+            # https://github.com/simonw/datasette/issues/1802
+            if "There is no current event loop in thread" in str(rex):
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._refresh_schemas_lock = asyncio.Lock()
+            else:
+                raise
         self.crossdb = crossdb
         self.nolock = nolock
         if memory or crossdb or not self.files:
@@ -559,7 +569,13 @@ class Datasette:
         if self.sqlite_extensions:
             conn.enable_load_extension(True)
             for extension in self.sqlite_extensions:
-                conn.execute("SELECT load_extension(?)", [extension])
+                # "extension" is either a string path to the extension
+                # or a 2-item tuple that specifies which entrypoint to load.
+                if isinstance(extension, tuple):
+                    path, entrypoint = extension
+                    conn.execute("SELECT load_extension(?, ?)", [path, entrypoint])
+                else:
+                    conn.execute("SELECT load_extension(?)", [extension])
         if self.setting("cache_size_kb"):
             conn.execute(f"PRAGMA cache_size=-{self.setting('cache_size_kb')}")
         # pylint: disable=no-member

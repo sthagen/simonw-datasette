@@ -14,7 +14,7 @@ Running ``datasette`` without specifying a command runs the default command, ``d
     import textwrap
     def help(args):
         title = "datasette " + " ".join(args)
-        cog.out("::\n\n")
+        cog.out("\n::\n\n")
         result = CliRunner().invoke(cli.cli, args)
         output = result.output.replace("Usage: cli ", "Usage: datasette ")
         cog.out(textwrap.indent(output, '    '))
@@ -32,6 +32,7 @@ Running ``datasette --help`` shows a list of all of the available commands.
 .. [[[cog
     help(["--help"])
 .. ]]]
+
 ::
 
     Usage: datasette [OPTIONS] COMMAND [ARGS]...
@@ -77,6 +78,7 @@ Once started you can access it at ``http://localhost:8001``
 .. [[[cog
     help(["serve", "--help"])
 .. ]]]
+
 ::
 
     Usage: datasette serve [OPTIONS] [FILES]...
@@ -84,48 +86,53 @@ Once started you can access it at ``http://localhost:8001``
       Serve up specified SQLite database files with a web UI
 
     Options:
-      -i, --immutable PATH      Database files to open in immutable mode
-      -h, --host TEXT           Host for server. Defaults to 127.0.0.1 which means
-                                only connections from the local machine will be
-                                allowed. Use 0.0.0.0 to listen to all IPs and allow
-                                access from other machines.
-      -p, --port INTEGER RANGE  Port for server, defaults to 8001. Use -p 0 to
-                                automatically assign an available port.
-                                [0<=x<=65535]
-      --uds TEXT                Bind to a Unix domain socket
-      --reload                  Automatically reload if code or metadata change
-                                detected - useful for development
-      --cors                    Enable CORS by serving Access-Control-Allow-Origin:
-                                *
-      --load-extension TEXT     Path to a SQLite extension to load
-      --inspect-file TEXT       Path to JSON file created using "datasette inspect"
-      -m, --metadata FILENAME   Path to JSON/YAML file containing license/source
-                                metadata
-      --template-dir DIRECTORY  Path to directory containing custom templates
-      --plugins-dir DIRECTORY   Path to directory containing custom plugins
-      --static MOUNT:DIRECTORY  Serve static files from this directory at /MOUNT/...
-      --memory                  Make /_memory database available
-      --config CONFIG           Deprecated: set config option using
-                                configname:value. Use --setting instead.
-      --setting SETTING...      Setting, see
-                                docs.datasette.io/en/stable/settings.html
-      --secret TEXT             Secret used for signing secure values, such as
-                                signed cookies
-      --root                    Output URL that sets a cookie authenticating the
-                                root user
-      --get TEXT                Run an HTTP GET request against this path, print
-                                results and exit
-      --version-note TEXT       Additional note to show on /-/versions
-      --help-settings           Show available settings
-      --pdb                     Launch debugger on any errors
-      -o, --open                Open Datasette in your web browser
-      --create                  Create database files if they do not exist
-      --crossdb                 Enable cross-database joins using the /_memory
-                                database
-      --nolock                  Ignore locking, open locked files in read-only mode
-      --ssl-keyfile TEXT        SSL key file
-      --ssl-certfile TEXT       SSL certificate file
-      --help                    Show this message and exit.
+      -i, --immutable PATH            Database files to open in immutable mode
+      -h, --host TEXT                 Host for server. Defaults to 127.0.0.1 which
+                                      means only connections from the local machine
+                                      will be allowed. Use 0.0.0.0 to listen to all
+                                      IPs and allow access from other machines.
+      -p, --port INTEGER RANGE        Port for server, defaults to 8001. Use -p 0 to
+                                      automatically assign an available port.
+                                      [0<=x<=65535]
+      --uds TEXT                      Bind to a Unix domain socket
+      --reload                        Automatically reload if code or metadata
+                                      change detected - useful for development
+      --cors                          Enable CORS by serving Access-Control-Allow-
+                                      Origin: *
+      --load-extension PATH:ENTRYPOINT?
+                                      Path to a SQLite extension to load, and
+                                      optional entrypoint
+      --inspect-file TEXT             Path to JSON file created using "datasette
+                                      inspect"
+      -m, --metadata FILENAME         Path to JSON/YAML file containing
+                                      license/source metadata
+      --template-dir DIRECTORY        Path to directory containing custom templates
+      --plugins-dir DIRECTORY         Path to directory containing custom plugins
+      --static MOUNT:DIRECTORY        Serve static files from this directory at
+                                      /MOUNT/...
+      --memory                        Make /_memory database available
+      --config CONFIG                 Deprecated: set config option using
+                                      configname:value. Use --setting instead.
+      --setting SETTING...            Setting, see
+                                      docs.datasette.io/en/stable/settings.html
+      --secret TEXT                   Secret used for signing secure values, such as
+                                      signed cookies
+      --root                          Output URL that sets a cookie authenticating
+                                      the root user
+      --get TEXT                      Run an HTTP GET request against this path,
+                                      print results and exit
+      --version-note TEXT             Additional note to show on /-/versions
+      --help-settings                 Show available settings
+      --pdb                           Launch debugger on any errors
+      -o, --open                      Open Datasette in your web browser
+      --create                        Create database files if they do not exist
+      --crossdb                       Enable cross-database joins using the /_memory
+                                      database
+      --nolock                        Ignore locking, open locked files in read-only
+                                      mode
+      --ssl-keyfile TEXT              SSL key file
+      --ssl-certfile TEXT             SSL certificate file
+      --help                          Show this message and exit.
 
 
 .. [[[end]]]
@@ -197,6 +204,7 @@ These can be passed to ``datasette serve`` using ``datasette serve --setting nam
 .. [[[cog
     help(["--help-settings"])
 .. ]]]
+
 ::
 
     Settings:
@@ -253,6 +261,7 @@ Output JSON showing all currently installed plugins, their versions, whether the
 .. [[[cog
     help(["plugins", "--help"])
 .. ]]]
+
 ::
 
     Usage: datasette plugins [OPTIONS]
@@ -321,6 +330,7 @@ Would install the `datasette-cluster-map <https://datasette.io/plugins/datasette
 .. [[[cog
     help(["install", "--help"])
 .. ]]]
+
 ::
 
     Usage: datasette install [OPTIONS] PACKAGES...
@@ -344,6 +354,7 @@ Uninstall one or more plugins.
 .. [[[cog
     help(["uninstall", "--help"])
 .. ]]]
+
 ::
 
     Usage: datasette uninstall [OPTIONS] PACKAGES...
@@ -369,6 +380,7 @@ Additional deployment targets can be added by plugins that use the :ref:`plugin_
 .. [[[cog
     help(["publish", "--help"])
 .. ]]]
+
 ::
 
     Usage: datasette publish [OPTIONS] COMMAND [ARGS]...
@@ -397,6 +409,7 @@ See :ref:`publish_cloud_run`.
 .. [[[cog
     help(["publish", "cloudrun", "--help"])
 .. ]]]
+
 ::
 
     Usage: datasette publish cloudrun [OPTIONS] [FILES]...
@@ -454,6 +467,7 @@ See :ref:`publish_heroku`.
 .. [[[cog
     help(["publish", "heroku", "--help"])
 .. ]]]
+
 ::
 
     Usage: datasette publish heroku [OPTIONS] [FILES]...
@@ -502,6 +516,7 @@ Package SQLite files into a Datasette Docker container, see :ref:`cli_package`.
 .. [[[cog
     help(["package", "--help"])
 .. ]]]
+
 ::
 
     Usage: datasette package [OPTIONS] FILES...
@@ -555,6 +570,7 @@ This performance optimization is used automatically by some of the ``datasette p
 .. [[[cog
     help(["inspect", "--help"])
 .. ]]]
+
 ::
 
     Usage: datasette inspect [OPTIONS] [FILES]...
@@ -566,8 +582,10 @@ This performance optimization is used automatically by some of the ``datasette p
 
     Options:
       --inspect-file TEXT
-      --load-extension TEXT  Path to a SQLite extension to load
-      --help                 Show this message and exit.
+      --load-extension PATH:ENTRYPOINT?
+                                      Path to a SQLite extension to load, and
+                                      optional entrypoint
+      --help                          Show this message and exit.
 
 
 .. [[[end]]]

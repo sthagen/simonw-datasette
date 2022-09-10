@@ -115,7 +115,7 @@ def test_database_page(app_client):
         assert fragment in response.text
 
     # And views
-    views_ul = soup.find("h2", text="Views").find_next_sibling("ul")
+    views_ul = soup.find("h2", string="Views").find_next_sibling("ul")
     assert views_ul is not None
     assert [
         ("/fixtures/paginated_view", "paginated_view"),
@@ -128,7 +128,7 @@ def test_database_page(app_client):
     ] == sorted([(a["href"], a.text) for a in views_ul.find_all("a")])
 
     # And a list of canned queries
-    queries_ul = soup.find("h2", text="Queries").find_next_sibling("ul")
+    queries_ul = soup.find("h2", string="Queries").find_next_sibling("ul")
     assert queries_ul is not None
     assert [
         ("/fixtures/from_async_hook", "from_async_hook"),
@@ -183,6 +183,25 @@ def test_row_page_does_not_truncate():
         assert ["Mission"] == [
             td.string
             for td in table.findAll("td", {"class": "col-neighborhood-b352a7"})
+        ]
+
+
+def test_query_page_truncates():
+    with make_app_client(settings={"truncate_cells_html": 5}) as client:
+        response = client.get(
+            "/fixtures?"
+            + urllib.parse.urlencode(
+                {
+                    "sql": "select 'this is longer than 5' as a, 'https://example.com/' as b"
+                }
+            )
+        )
+        assert response.status == 200
+        table = Soup(response.body, "html.parser").find("table")
+        tds = table.findAll("td")
+        assert [str(td) for td in tds] == [
+            '<td class="col-a">this …</td>',
+            '<td class="col-b"><a href="https://example.com/">http…</a></td>',
         ]
 
 
