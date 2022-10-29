@@ -205,14 +205,30 @@ class InvalidSql(Exception):
     pass
 
 
+# Allow SQL to start with a /* */ or -- comment
+comment_re = (
+    # Start of string, then any amount of whitespace
+    r"^\s*("
+    +
+    # Comment that starts with -- and ends at a newline
+    r"(?:\-\-.*?\n\s*)"
+    +
+    # Comment that starts with /* and ends with */ - but does not have */ in it
+    r"|(?:\/\*((?!\*\/)[\s\S])*\*\/)"
+    +
+    # Whitespace
+    r"\s*)*\s*"
+)
+
 allowed_sql_res = [
-    re.compile(r"^select\b"),
-    re.compile(r"^explain\s+select\b"),
-    re.compile(r"^explain\s+query\s+plan\s+select\b"),
-    re.compile(r"^with\b"),
-    re.compile(r"^explain\s+with\b"),
-    re.compile(r"^explain\s+query\s+plan\s+with\b"),
+    re.compile(comment_re + r"select\b"),
+    re.compile(comment_re + r"explain\s+select\b"),
+    re.compile(comment_re + r"explain\s+query\s+plan\s+select\b"),
+    re.compile(comment_re + r"with\b"),
+    re.compile(comment_re + r"explain\s+with\b"),
+    re.compile(comment_re + r"explain\s+query\s+plan\s+with\b"),
 ]
+
 allowed_pragmas = (
     "database_list",
     "foreign_key_list",
@@ -390,7 +406,7 @@ def make_dockerfile(
             "SQLITE_EXTENSIONS"
         ] = "/usr/lib/x86_64-linux-gnu/mod_spatialite.so"
     return """
-FROM python:3.10.6-slim-bullseye
+FROM python:3.11.0-slim-bullseye
 COPY . /app
 WORKDIR /app
 {apt_get_extras}
