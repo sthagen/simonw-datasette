@@ -765,6 +765,8 @@ def test_base_url_config(app_client_base_url_prefix, path, use_prefix):
         path_to_get = "/prefix/" + path.lstrip("/")
     response = client.get(path_to_get)
     soup = Soup(response.body, "html.parser")
+    for form in soup.select("form"):
+        assert form["action"].startswith("/prefix")
     for el in soup.findAll(["a", "link", "script"]):
         if "href" in el.attrs:
             href = el["href"]
@@ -797,6 +799,16 @@ def test_base_url_config(app_client_base_url_prefix, path, use_prefix):
                 indent=4,
                 default=repr,
             )
+
+
+def test_base_url_affects_filter_redirects(app_client_base_url_prefix):
+    path = "/fixtures/binary_data?_filter_column=rowid&_filter_op=exact&_filter_value=1&_sort=rowid"
+    response = app_client_base_url_prefix.get(path)
+    assert response.status == 302
+    assert (
+        response.headers["location"]
+        == "/prefix/fixtures/binary_data?_sort=rowid&rowid__exact=1"
+    )
 
 
 def test_base_url_affects_metadata_extra_css_urls(app_client_base_url_prefix):
