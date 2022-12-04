@@ -808,8 +808,11 @@ def test_settings_json(app_client):
         "facet_suggest_time_limit_ms": 50,
         "facet_time_limit_ms": 200,
         "max_returned_rows": 100,
+        "max_insert_rows": 100,
         "sql_time_limit_ms": 200,
         "allow_download": True,
+        "allow_signed_tokens": True,
+        "max_signed_tokens_ttl": 0,
         "allow_facet": True,
         "suggest_facets": True,
         "default_cache_ttl": 5,
@@ -894,14 +897,39 @@ def test_config_force_https_urls():
         ("/fixtures/no_primary_key.json", 200),
         # A 400 invalid SQL query should still have the header:
         ("/fixtures.json?sql=select+blah", 400),
+        # Write APIs
+        ("/fixtures/-/create", 405),
+        ("/fixtures/facetable/-/insert", 405),
+        ("/fixtures/facetable/-/drop", 405),
     ],
 )
-def test_cors(app_client_with_cors, path, status_code):
+def test_cors(
+    app_client_with_cors,
+    app_client_two_attached_databases_one_immutable,
+    path,
+    status_code,
+):
     response = app_client_with_cors.get(path)
     assert response.status == status_code
     assert response.headers["Access-Control-Allow-Origin"] == "*"
-    assert response.headers["Access-Control-Allow-Headers"] == "Authorization"
+    assert (
+        response.headers["Access-Control-Allow-Headers"]
+        == "Authorization, Content-Type"
+    )
     assert response.headers["Access-Control-Expose-Headers"] == "Link"
+    assert (
+        response.headers["Access-Control-Allow-Methods"] == "GET, POST, HEAD, OPTIONS"
+    )
+    # Same request to app_client_two_attached_databases_one_immutable
+    # should not have those headers - I'm using that fixture because
+    # regular app_client doesn't have immutable fixtures.db which means
+    # the test for /fixtures.db returns a 403 error
+    response = app_client_two_attached_databases_one_immutable.get(path)
+    assert response.status == status_code
+    assert "Access-Control-Allow-Origin" not in response.headers
+    assert "Access-Control-Allow-Headers" not in response.headers
+    assert "Access-Control-Expose-Headers" not in response.headers
+    assert "Access-Control-Allow-Methods" not in response.headers
 
 
 @pytest.mark.parametrize(

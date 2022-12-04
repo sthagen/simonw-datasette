@@ -215,6 +215,19 @@ def permission_allowed(actor, action):
         return False
     elif action == "view-database-download":
         return actor.get("can_download") if actor else None
+    # Special permissions for latest.datasette.io demos
+    # See https://github.com/simonw/todomvc-datasette/issues/2
+    actor_id = None
+    if actor:
+        actor_id = actor.get("id")
+    if actor_id == "todomvc" and action in (
+        "insert-row",
+        "create-table",
+        "drop-table",
+        "delete-row",
+        "update-row",
+    ):
+        return True
 
 
 @hookimpl
@@ -270,7 +283,10 @@ def register_routes():
             <form action="{}" method="POST">
                 <p>
                     <input type="hidden" name="csrftoken" value="{}">
-                    <input type="submit" value="Sign in as root user"></p>
+                    <input type="submit"
+                      value="Sign in as root user"
+                      style="font-size: 2em; padding: 0.1em 0.5em;">
+                </p>
             </form>
         """.format(
                 request.path, request.scope["csrftoken"]()

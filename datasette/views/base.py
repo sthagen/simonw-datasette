@@ -20,7 +20,6 @@ from datasette.utils import (
     InvalidSql,
     LimitedWriter,
     call_with_supported_arguments,
-    tilde_decode,
     path_from_row_pks,
     path_with_added_args,
     path_with_removed_args,
@@ -69,26 +68,44 @@ class BaseView:
     def database_color(self, database):
         return "ff0000"
 
+    async def method_not_allowed(self, request):
+        if (
+            request.path.endswith(".json")
+            or request.headers.get("content-type") == "application/json"
+        ):
+            response = Response.json(
+                {"ok": False, "error": "Method not allowed"}, status=405
+            )
+        else:
+            response = Response.text("Method not allowed", status=405)
+        return response
+
     async def options(self, request, *args, **kwargs):
-        return Response.text("Method not allowed", status=405)
+        return Response.text("ok")
+
+    async def get(self, request, *args, **kwargs):
+        return await self.method_not_allowed(request)
 
     async def post(self, request, *args, **kwargs):
-        return Response.text("Method not allowed", status=405)
+        return await self.method_not_allowed(request)
 
     async def put(self, request, *args, **kwargs):
-        return Response.text("Method not allowed", status=405)
+        return await self.method_not_allowed(request)
 
     async def patch(self, request, *args, **kwargs):
-        return Response.text("Method not allowed", status=405)
+        return await self.method_not_allowed(request)
 
     async def delete(self, request, *args, **kwargs):
-        return Response.text("Method not allowed", status=405)
+        return await self.method_not_allowed(request)
 
     async def dispatch_request(self, request):
         if self.ds:
             await self.ds.refresh_schemas()
         handler = getattr(self, request.method.lower(), None)
-        return await handler(request)
+        response = await handler(request)
+        if self.ds.cors:
+            add_cors_headers(response.headers)
+        return response
 
     async def render(self, templates, request, context=None):
         context = context or {}
@@ -142,12 +159,6 @@ class BaseView:
 
 class DataView(BaseView):
     name = ""
-
-    async def options(self, request, *args, **kwargs):
-        r = Response.text("ok")
-        if self.ds.cors:
-            add_cors_headers(r.headers)
-        return r
 
     def redirect(self, request, path, forward_querystring=True, remove_args=None):
         if request.query_string and "?" not in path and forward_querystring:
@@ -335,13 +346,9 @@ class DataView(BaseView):
         return AsgiStream(stream_fn, headers=headers, content_type=content_type)
 
     async def get(self, request):
-        database_route = tilde_decode(request.url_vars["database"])
-
-        try:
-            db = self.ds.get_database(route=database_route)
-        except KeyError:
-            raise NotFound("Database not found: {}".format(database_route))
+        db = await self.ds.resolve_database(request)
         database = db.name
+        database_route = db.route
 
         _format = request.url_vars["format"]
         data_kwargs = {}
@@ -507,7 +514,6 @@ class DataView(BaseView):
                         if key not in ("_labels", "_facet", "_size")
                     ]
                     + [("_size", "max")],
-                    "datasette_version": __version__,
                     "settings": self.ds.settings_dict(),
                 },
             }
@@ -536,3 +542,7 @@ class DataView(BaseView):
         if self.ds.cors:
             add_cors_headers(response.headers)
         return response
+
+
+def _error(messages, status=400):
+    return Response.json({"ok": False, "errors": messages}, status=status)
