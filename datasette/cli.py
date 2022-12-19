@@ -7,10 +7,10 @@ from click_default_group import DefaultGroup
 import json
 import os
 import pathlib
+from runpy import run_module
 import shutil
 from subprocess import call
 import sys
-from runpy import run_module
 import webbrowser
 from .app import (
     OBSOLETE_SETTINGS,
@@ -434,6 +434,10 @@ def uninstall(packages, yes):
     "--get",
     help="Run an HTTP GET request against this path, print results and exit",
 )
+@click.option(
+    "--token",
+    help="API token to send with --get requests",
+)
 @click.option("--version-note", help="Additional note to show on /-/versions")
 @click.option("--help-settings", is_flag=True, help="Show available settings")
 @click.option("--pdb", is_flag=True, help="Launch debugger on any errors")
@@ -487,6 +491,7 @@ def serve(
     secret,
     root,
     get,
+    token,
     version_note,
     help_settings,
     pdb,
@@ -593,9 +598,15 @@ def serve(
     # Run async soundness checks - but only if we're not under pytest
     asyncio.get_event_loop().run_until_complete(check_databases(ds))
 
+    if token and not get:
+        raise click.ClickException("--token can only be used with --get")
+
     if get:
         client = TestClient(ds)
-        response = client.get(get)
+        headers = {}
+        if token:
+            headers["Authorization"] = "Bearer {}".format(token)
+        response = client.get(get, headers=headers)
         click.echo(response.text)
         exit_code = 0 if response.status == 200 else 1
         sys.exit(exit_code)
@@ -607,7 +618,7 @@ def serve(
         url = "http://{}:{}{}?token={}".format(
             host, port, ds.urls.path("-/auth-token"), ds._root_token
         )
-        print(url)
+        click.echo(url)
     if open_browser:
         if url is None:
             # Figure out most convenient URL - to table, database or homepage
@@ -626,6 +637,132 @@ def serve(
     if ssl_certfile:
         uvicorn_kwargs["ssl_certfile"] = ssl_certfile
     uvicorn.run(ds.app(), **uvicorn_kwargs)
+
+
+@cli.command()
+@click.argument("id")
+@click.option(
+    "--secret",
+    help="Secret used for signing the API tokens",
+    envvar="DATASETTE_SECRET",
+    required=True,
+)
+@click.option(
+    "-e",
+    "--expires-after",
+    help="Token should expire after this many seconds",
+    type=int,
+)
+@click.option(
+    "alls",
+    "-a",
+    "--all",
+    type=str,
+    metavar="ACTION",
+    multiple=True,
+    help="Restrict token to this action",
+)
+@click.option(
+    "databases",
+    "-d",
+    "--database",
+    type=(str, str),
+    metavar="DB ACTION",
+    multiple=True,
+    help="Restrict token to this action on this database",
+)
+@click.option(
+    "resources",
+    "-r",
+    "--resource",
+    type=(str, str, str),
+    metavar="DB RESOURCE ACTION",
+    multiple=True,
+    help="Restrict token to this action on this database resource (a table, SQL view or named query)",
+)
+@click.option(
+    "--debug",
+    help="Show decoded token",
+    is_flag=True,
+)
+@click.option(
+    "--plugins-dir",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True),
+    help="Path to directory containing custom plugins",
+)
+def create_token(
+    id, secret, expires_after, alls, databases, resources, debug, plugins_dir
+):
+    """
+    Create a signed API token for the specified actor ID
+
+    Example:
+
+        datasette create-token root --secret mysecret
+
+    To allow only "view-database-download" for all databases:
+
+    \b
+        datasette create-token root --secret mysecret \\
+            --all view-database-download
+
+    To allow "create-table" against a specific database:
+
+    \b
+        datasette create-token root --secret mysecret \\
+            --database mydb create-table
+
+    To allow "insert-row" against a specific table:
+
+    \b
+        datasette create-token root --secret myscret \\
+            --resource mydb mytable insert-row
+
+    Restricted actions can be specified multiple times using
+    multiple --all, --database, and --resource options.
+
+    Add --debug to see a decoded version of the token.
+    """
+    ds = Datasette(secret=secret, plugins_dir=plugins_dir)
+
+    # Run ds.invoke_startup() in an event loop
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(ds.invoke_startup())
+
+    # Warn about any unknown actions
+    actions = []
+    actions.extend(alls)
+    actions.extend([p[1] for p in databases])
+    actions.extend([p[2] for p in resources])
+    for action in actions:
+        if not ds.permissions.get(action):
+            click.secho(
+                f"  Unknown permission: {action} ",
+                fg="red",
+                err=True,
+            )
+
+    restrict_database = {}
+    for database, action in databases:
+        restrict_database.setdefault(database, []).append(action)
+    restrict_resource = {}
+    for database, resource, action in resources:
+        restrict_resource.setdefault(database, {}).setdefault(resource, []).append(
+            action
+        )
+
+    token = ds.create_token(
+        id,
+        expires_after=expires_after,
+        restrict_all=alls,
+        restrict_database=restrict_database,
+        restrict_resource=restrict_resource,
+    )
+    click.echo(token)
+    if debug:
+        encoded = token[len("dstok_") :]
+        click.echo("\nDecoded:\n")
+        click.echo(json.dumps(ds.unsign(encoded, namespace="token"), indent=2))
 
 
 pm.hook.register_commands(cli=cli)

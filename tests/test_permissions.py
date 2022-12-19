@@ -1,11 +1,16 @@
+import collections
 from datasette.app import Datasette
+from datasette.cli import cli
 from .fixtures import app_client, assert_permissions_checked, make_app_client
+from click.testing import CliRunner
 from bs4 import BeautifulSoup as Soup
 import copy
 import json
+from pprint import pprint
 import pytest_asyncio
 import pytest
 import re
+import time
 import urllib
 
 
@@ -350,21 +355,23 @@ def test_query_list_respects_view_query():
     ],
 )
 def test_permissions_checked(app_client, path, permissions):
+    # Needs file-backed app_client for /fixtures.db
     app_client.ds._permission_checks.clear()
     response = app_client.get(path)
-    assert response.status in (200, 403)
+    assert response.status_code in (200, 403)
     assert_permissions_checked(app_client.ds, permissions)
 
 
-def test_permissions_debug(app_client):
-    app_client.ds._permission_checks.clear()
-    assert app_client.get("/-/permissions").status == 403
+@pytest.mark.asyncio
+async def test_permissions_debug(ds_client):
+    ds_client.ds._permission_checks.clear()
+    assert (await ds_client.get("/-/permissions")).status_code == 403
     # With the cookie it should work
-    cookie = app_client.actor_cookie({"id": "root"})
-    response = app_client.get("/-/permissions", cookies={"ds_actor": cookie})
-    assert response.status == 200
+    cookie = ds_client.actor_cookie({"id": "root"})
+    response = await ds_client.get("/-/permissions", cookies={"ds_actor": cookie})
+    assert response.status_code == 200
     # Should show one failure and one success
-    soup = Soup(response.body, "html.parser")
+    soup = Soup(response.text, "html.parser")
     check_divs = soup.findAll("div", {"class": "check"})
     checks = [
         {
@@ -387,6 +394,7 @@ def test_permissions_debug(app_client):
     ]
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "actor,allow,expected_fragment",
     [
@@ -396,11 +404,11 @@ def test_permissions_debug(app_client):
         ('{"id":"root"}', '"*"}', "Allow JSON error"),
     ],
 )
-def test_allow_debug(app_client, actor, allow, expected_fragment):
-    response = app_client.get(
+async def test_allow_debug(ds_client, actor, allow, expected_fragment):
+    response = await ds_client.get(
         "/-/allow-debug?" + urllib.parse.urlencode({"actor": actor, "allow": allow})
     )
-    assert 200 == response.status
+    assert response.status_code == 200
     assert expected_fragment in response.text
 
 
@@ -434,7 +442,6 @@ def view_instance_client():
         "/-/settings",
         "/-/threads",
         "/-/databases",
-        "/-/actor",
         "/-/permissions",
         "/-/messages",
         "/-/patterns",
@@ -590,20 +597,36 @@ DEF = "USE_DEFAULT"
             DEF,
         ),
         ({"id": "t", "_r": {"d": {"one": ["es"]}}}, "execute-sql", "one", None, DEF),
-        # Works at the "t" for table level:
+        # Works at the "r" for table level:
         (
-            {"id": "t", "_r": {"t": {"one": {"t1": ["vt"]}}}},
+            {"id": "t", "_r": {"r": {"one": {"t1": ["vt"]}}}},
             "view-table",
             "one",
             "t1",
             DEF,
         ),
         (
-            {"id": "t", "_r": {"t": {"one": {"t1": ["vt"]}}}},
+            {"id": "t", "_r": {"r": {"one": {"t1": ["vt"]}}}},
             "view-table",
             "one",
             "t2",
             False,
+        ),
+        # non-abbreviations should work too
+        ({"id": "t", "_r": {"a": ["view-instance"]}}, "view-instance", None, None, DEF),
+        (
+            {"id": "t", "_r": {"d": {"one": ["view-database"]}}},
+            "view-database",
+            "one",
+            None,
+            DEF,
+        ),
+        (
+            {"id": "t", "_r": {"r": {"one": {"t1": ["view-table"]}}}},
+            "view-table",
+            "one",
+            "t1",
+            DEF,
         ),
     ),
 )
@@ -640,3 +663,291 @@ async def test_actor_restricted_permissions(
         "result": expected_result,
     }
     assert response.json() == expected
+
+
+PermMetadataTestCase = collections.namedtuple(
+    "PermMetadataTestCase",
+    "metadata,actor,action,resource,expected_result",
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "metadata,actor,action,resource,expected_result",
+    (
+        # Simple view-instance default=True example
+        PermMetadataTestCase(
+            metadata={},
+            actor=None,
+            action="view-instance",
+            resource=None,
+            expected_result=True,
+        ),
+        # debug-menu on root
+        PermMetadataTestCase(
+            metadata={"permissions": {"debug-menu": {"id": "user"}}},
+            actor={"id": "user"},
+            action="debug-menu",
+            resource=None,
+            expected_result=True,
+        ),
+        # debug-menu on root, wrong actor
+        PermMetadataTestCase(
+            metadata={"permissions": {"debug-menu": {"id": "user"}}},
+            actor={"id": "user2"},
+            action="debug-menu",
+            resource=None,
+            expected_result=False,
+        ),
+        # create-table on root
+        PermMetadataTestCase(
+            metadata={"permissions": {"create-table": {"id": "user"}}},
+            actor={"id": "user"},
+            action="create-table",
+            resource=None,
+            expected_result=True,
+        ),
+        # create-table on database - no resource specified
+        PermMetadataTestCase(
+            metadata={
+                "databases": {
+                    "perms_ds_one": {"permissions": {"create-table": {"id": "user"}}}
+                }
+            },
+            actor={"id": "user"},
+            action="create-table",
+            resource=None,
+            expected_result=False,
+        ),
+        # create-table on database
+        PermMetadataTestCase(
+            metadata={
+                "databases": {
+                    "perms_ds_one": {"permissions": {"create-table": {"id": "user"}}}
+                }
+            },
+            actor={"id": "user"},
+            action="create-table",
+            resource="perms_ds_one",
+            expected_result=True,
+        ),
+        # insert-row on root, wrong actor
+        PermMetadataTestCase(
+            metadata={"permissions": {"insert-row": {"id": "user"}}},
+            actor={"id": "user2"},
+            action="insert-row",
+            resource=("perms_ds_one", "t1"),
+            expected_result=False,
+        ),
+        # insert-row on root, right actor
+        PermMetadataTestCase(
+            metadata={"permissions": {"insert-row": {"id": "user"}}},
+            actor={"id": "user"},
+            action="insert-row",
+            resource=("perms_ds_one", "t1"),
+            expected_result=True,
+        ),
+        # insert-row on database
+        PermMetadataTestCase(
+            metadata={
+                "databases": {
+                    "perms_ds_one": {"permissions": {"insert-row": {"id": "user"}}}
+                }
+            },
+            actor={"id": "user"},
+            action="insert-row",
+            resource="perms_ds_one",
+            expected_result=True,
+        ),
+        # insert-row on table, wrong table
+        PermMetadataTestCase(
+            metadata={
+                "databases": {
+                    "perms_ds_one": {
+                        "tables": {
+                            "t1": {"permissions": {"insert-row": {"id": "user"}}}
+                        }
+                    }
+                }
+            },
+            actor={"id": "user"},
+            action="insert-row",
+            resource=("perms_ds_one", "t2"),
+            expected_result=False,
+        ),
+        # insert-row on table, right table
+        PermMetadataTestCase(
+            metadata={
+                "databases": {
+                    "perms_ds_one": {
+                        "tables": {
+                            "t1": {"permissions": {"insert-row": {"id": "user"}}}
+                        }
+                    }
+                }
+            },
+            actor={"id": "user"},
+            action="insert-row",
+            resource=("perms_ds_one", "t1"),
+            expected_result=True,
+        ),
+        # view-query on canned query, wrong actor
+        PermMetadataTestCase(
+            metadata={
+                "databases": {
+                    "perms_ds_one": {
+                        "queries": {
+                            "q1": {
+                                "sql": "select 1 + 1",
+                                "permissions": {"view-query": {"id": "user"}},
+                            }
+                        }
+                    }
+                }
+            },
+            actor={"id": "user2"},
+            action="view-query",
+            resource=("perms_ds_one", "q1"),
+            expected_result=False,
+        ),
+        # view-query on canned query, right actor
+        PermMetadataTestCase(
+            metadata={
+                "databases": {
+                    "perms_ds_one": {
+                        "queries": {
+                            "q1": {
+                                "sql": "select 1 + 1",
+                                "permissions": {"view-query": {"id": "user"}},
+                            }
+                        }
+                    }
+                }
+            },
+            actor={"id": "user"},
+            action="view-query",
+            resource=("perms_ds_one", "q1"),
+            expected_result=True,
+        ),
+    ),
+)
+async def test_permissions_in_metadata(
+    perms_ds, metadata, actor, action, resource, expected_result
+):
+    previous_metadata = perms_ds.metadata()
+    updated_metadata = copy.deepcopy(previous_metadata)
+    updated_metadata.update(metadata)
+    perms_ds._metadata_local = updated_metadata
+    try:
+        result = await perms_ds.permission_allowed(actor, action, resource)
+        if result != expected_result:
+            pprint(perms_ds._permission_checks)
+            assert result == expected_result
+    finally:
+        perms_ds._metadata_local = previous_metadata
+
+
+@pytest.mark.asyncio
+async def test_actor_endpoint_allows_any_token():
+    ds = Datasette()
+    token = ds.sign(
+        {
+            "a": "root",
+            "token": "dstok",
+            "t": int(time.time()),
+            "_r": {"a": ["debug-menu"]},
+        },
+        namespace="token",
+    )
+    response = await ds.client.get(
+        "/-/actor.json", headers={"Authorization": f"Bearer dstok_{token}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["actor"] == {
+        "id": "root",
+        "token": "dstok",
+        "_r": {"a": ["debug-menu"]},
+    }
+
+
+@pytest.mark.parametrize(
+    "options,expected",
+    (
+        ([], {"id": "root", "token": "dstok"}),
+        (
+            ["--all", "debug-menu"],
+            {"_r": {"a": ["dm"]}, "id": "root", "token": "dstok"},
+        ),
+        (
+            ["-a", "debug-menu", "--all", "create-table"],
+            {"_r": {"a": ["dm", "ct"]}, "id": "root", "token": "dstok"},
+        ),
+        (
+            ["-r", "db1", "t1", "insert-row"],
+            {"_r": {"r": {"db1": {"t1": ["ir"]}}}, "id": "root", "token": "dstok"},
+        ),
+        (
+            ["-d", "db1", "create-table"],
+            {"_r": {"d": {"db1": ["ct"]}}, "id": "root", "token": "dstok"},
+        ),
+        # And one with all of them multiple times using all the names
+        (
+            [
+                "-a",
+                "debug-menu",
+                "--all",
+                "create-table",
+                "-r",
+                "db1",
+                "t1",
+                "insert-row",
+                "--resource",
+                "db1",
+                "t2",
+                "update-row",
+                "-d",
+                "db1",
+                "create-table",
+                "--database",
+                "db2",
+                "drop-table",
+            ],
+            {
+                "_r": {
+                    "a": ["dm", "ct"],
+                    "d": {"db1": ["ct"], "db2": ["dt"]},
+                    "r": {"db1": {"t1": ["ir"], "t2": ["ur"]}},
+                },
+                "id": "root",
+                "token": "dstok",
+            },
+        ),
+    ),
+)
+def test_cli_create_token(options, expected):
+    runner = CliRunner()
+    result1 = runner.invoke(
+        cli,
+        [
+            "create-token",
+            "--secret",
+            "sekrit",
+            "root",
+        ]
+        + options,
+    )
+    token = result1.output.strip()
+    result2 = runner.invoke(
+        cli,
+        [
+            "serve",
+            "--secret",
+            "sekrit",
+            "--get",
+            "/-/actor.json",
+            "--token",
+            token,
+        ],
+    )
+    assert 0 == result2.exit_code, result2.output
+    assert json.loads(result2.output) == {"actor": expected}

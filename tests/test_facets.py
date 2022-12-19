@@ -3,15 +3,15 @@ from datasette.database import Database
 from datasette.facets import ColumnFacet, ArrayFacet, DateFacet
 from datasette.utils.asgi import Request
 from datasette.utils import detect_json1
-from .fixtures import app_client, make_app_client  # noqa
+from .fixtures import make_app_client
 import json
 import pytest
 
 
 @pytest.mark.asyncio
-async def test_column_facet_suggest(app_client):
+async def test_column_facet_suggest(ds_client):
     facet = ColumnFacet(
-        app_client.ds,
+        ds_client.ds,
         Request.fake("/"),
         database="fixtures",
         sql="select * from facetable",
@@ -37,9 +37,9 @@ async def test_column_facet_suggest(app_client):
 
 
 @pytest.mark.asyncio
-async def test_column_facet_suggest_skip_if_already_selected(app_client):
+async def test_column_facet_suggest_skip_if_already_selected(ds_client):
     facet = ColumnFacet(
-        app_client.ds,
+        ds_client.ds,
         Request.fake("/?_facet=planet_int&_facet=on_earth"),
         database="fixtures",
         sql="select * from facetable",
@@ -75,9 +75,9 @@ async def test_column_facet_suggest_skip_if_already_selected(app_client):
 
 
 @pytest.mark.asyncio
-async def test_column_facet_suggest_skip_if_enabled_by_metadata(app_client):
+async def test_column_facet_suggest_skip_if_enabled_by_metadata(ds_client):
     facet = ColumnFacet(
-        app_client.ds,
+        ds_client.ds,
         Request.fake("/"),
         database="fixtures",
         sql="select * from facetable",
@@ -97,9 +97,9 @@ async def test_column_facet_suggest_skip_if_enabled_by_metadata(app_client):
 
 
 @pytest.mark.asyncio
-async def test_column_facet_results(app_client):
+async def test_column_facet_results(ds_client):
     facet = ColumnFacet(
-        app_client.ds,
+        ds_client.ds,
         Request.fake("/?_facet=_city_id"),
         database="fixtures",
         sql="select * from facetable",
@@ -149,9 +149,9 @@ async def test_column_facet_results(app_client):
 
 
 @pytest.mark.asyncio
-async def test_column_facet_results_column_starts_with_underscore(app_client):
+async def test_column_facet_results_column_starts_with_underscore(ds_client):
     facet = ColumnFacet(
-        app_client.ds,
+        ds_client.ds,
         Request.fake("/?_facet=_neighborhood"),
         database="fixtures",
         sql="select * from facetable",
@@ -271,9 +271,9 @@ async def test_column_facet_results_column_starts_with_underscore(app_client):
 
 
 @pytest.mark.asyncio
-async def test_column_facet_from_metadata_cannot_be_hidden(app_client):
+async def test_column_facet_from_metadata_cannot_be_hidden(ds_client):
     facet = ColumnFacet(
-        app_client.ds,
+        ds_client.ds,
         Request.fake("/"),
         database="fixtures",
         sql="select * from facetable",
@@ -325,9 +325,9 @@ async def test_column_facet_from_metadata_cannot_be_hidden(app_client):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not detect_json1(), reason="Requires the SQLite json1 module")
-async def test_array_facet_suggest(app_client):
+async def test_array_facet_suggest(ds_client):
     facet = ArrayFacet(
-        app_client.ds,
+        ds_client.ds,
         Request.fake("/"),
         database="fixtures",
         sql="select * from facetable",
@@ -345,9 +345,9 @@ async def test_array_facet_suggest(app_client):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not detect_json1(), reason="Requires the SQLite json1 module")
-async def test_array_facet_suggest_not_if_all_empty_arrays(app_client):
+async def test_array_facet_suggest_not_if_all_empty_arrays(ds_client):
     facet = ArrayFacet(
-        app_client.ds,
+        ds_client.ds,
         Request.fake("/"),
         database="fixtures",
         sql="select * from facetable where tags = '[]'",
@@ -359,9 +359,9 @@ async def test_array_facet_suggest_not_if_all_empty_arrays(app_client):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not detect_json1(), reason="Requires the SQLite json1 module")
-async def test_array_facet_results(app_client):
+async def test_array_facet_results(ds_client):
     facet = ArrayFacet(
-        app_client.ds,
+        ds_client.ds,
         Request.fake("/?_facet_array=tags"),
         database="fixtures",
         sql="select * from facetable",
@@ -459,9 +459,9 @@ async def test_array_facet_handle_duplicate_tags():
 
 
 @pytest.mark.asyncio
-async def test_date_facet_results(app_client):
+async def test_date_facet_results(ds_client):
     facet = DateFacet(
-        app_client.ds,
+        ds_client.ds,
         Request.fake("/?_facet_date=created"),
         database="fixtures",
         sql="select * from facetable",
@@ -582,22 +582,28 @@ async def test_facet_size():
     data5 = response5.json()
     assert len(data5["facet_results"]["city"]["results"]) == 20
     # Now try messing with facet_size in the table metadata
-    ds._metadata_local = {
-        "databases": {
-            "test_facet_size": {"tables": {"neighbourhoods": {"facet_size": 6}}}
+    orig_metadata = ds._metadata_local
+    try:
+        ds._metadata_local = {
+            "databases": {
+                "test_facet_size": {"tables": {"neighbourhoods": {"facet_size": 6}}}
+            }
         }
-    }
-    response6 = await ds.client.get("/test_facet_size/neighbourhoods.json?_facet=city")
-    data6 = response6.json()
-    assert len(data6["facet_results"]["city"]["results"]) == 6
-    # Setting it to max bumps it up to 50 again
-    ds._metadata_local["databases"]["test_facet_size"]["tables"]["neighbourhoods"][
-        "facet_size"
-    ] = "max"
-    data7 = (
-        await ds.client.get("/test_facet_size/neighbourhoods.json?_facet=city")
-    ).json()
-    assert len(data7["facet_results"]["city"]["results"]) == 20
+        response6 = await ds.client.get(
+            "/test_facet_size/neighbourhoods.json?_facet=city"
+        )
+        data6 = response6.json()
+        assert len(data6["facet_results"]["city"]["results"]) == 6
+        # Setting it to max bumps it up to 50 again
+        ds._metadata_local["databases"]["test_facet_size"]["tables"]["neighbourhoods"][
+            "facet_size"
+        ] = "max"
+        data7 = (
+            await ds.client.get("/test_facet_size/neighbourhoods.json?_facet=city")
+        ).json()
+        assert len(data7["facet_results"]["city"]["results"]) == 20
+    finally:
+        ds._metadata_local = orig_metadata
 
 
 def test_other_types_of_facet_in_metadata():
@@ -623,12 +629,13 @@ def test_other_types_of_facet_in_metadata():
             assert fragment in response.text
 
 
-def test_conflicting_facet_names_json(app_client):
-    response = app_client.get(
+@pytest.mark.asyncio
+async def test_conflicting_facet_names_json(ds_client):
+    response = await ds_client.get(
         "/fixtures/facetable.json?_facet=created&_facet_date=created"
         "&_facet=tags&_facet_array=tags"
     )
-    assert set(response.json["facet_results"].keys()) == {
+    assert set(response.json()["facet_results"].keys()) == {
         "created",
         "tags",
         "created_2",

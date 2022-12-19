@@ -1,7 +1,9 @@
+import asyncio
 import httpx
 import os
 import pathlib
 import pytest
+import pytest_asyncio
 import re
 import subprocess
 import tempfile
@@ -21,6 +23,58 @@ UNDOCUMENTED_PERMISSIONS = {
     "this_is_denied_async",
     "no_match",
 }
+
+_ds_client = None
+
+
+def wait_until_responds(url, timeout=5.0, client=httpx, **kwargs):
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            client.get(url, **kwargs)
+            return
+        except httpx.ConnectError:
+            time.sleep(0.1)
+    raise AssertionError("Timed out waiting for {} to respond".format(url))
+
+
+@pytest_asyncio.fixture
+async def ds_client():
+    from datasette.app import Datasette
+    from .fixtures import METADATA, PLUGINS_DIR
+
+    global _ds_client
+    if _ds_client is not None:
+        return _ds_client
+
+    ds = Datasette(
+        metadata=METADATA,
+        plugins_dir=PLUGINS_DIR,
+        settings={
+            "default_page_size": 50,
+            "max_returned_rows": 100,
+            "sql_time_limit_ms": 200,
+            # Default is 3 but this results in "too many open files"
+            # errors when running the full test suite:
+            "num_sql_threads": 1,
+        },
+    )
+    from .fixtures import TABLES, TABLE_PARAMETERIZED_SQL
+
+    db = ds.add_memory_database("fixtures")
+    ds.remove_database("_memory")
+
+    def prepare(conn):
+        if not conn.execute("select count(*) from sqlite_master").fetchone()[0]:
+            conn.executescript(TABLES)
+            for sql, params in TABLE_PARAMETERIZED_SQL:
+                with conn:
+                    conn.execute(sql, params)
+
+    await db.execute_write_fn(prepare)
+    await ds.invoke_startup()
+    _ds_client = ds.client
+    return _ds_client
 
 
 def pytest_report_header(config):
@@ -90,6 +144,13 @@ def check_permission_actions_are_documented():
 
     def before(hook_name, hook_impls, kwargs):
         if hook_name == "permission_allowed":
+            datasette = kwargs["datasette"]
+            assert kwargs["action"] in datasette.permissions, (
+                "'{}' has not been registered with register_permissions()".format(
+                    kwargs["action"]
+                )
+                + " (or maybe a test forgot to do await ds.invoke_startup())"
+            )
             action = kwargs.get("action").replace("-", "_")
             assert (
                 action in documented_permission_actions
@@ -111,56 +172,10 @@ def ds_localhost_http_server():
         # Avoid FileNotFoundError: [Errno 2] No such file or directory:
         cwd=tempfile.gettempdir(),
     )
-    # Loop until port 8041 serves traffic
-    while True:
-        try:
-            httpx.get("http://localhost:8041/")
-            break
-        except httpx.ConnectError:
-            time.sleep(0.1)
+    wait_until_responds("http://localhost:8041/")
     # Check it started successfully
     assert not ds_proc.poll(), ds_proc.stdout.read().decode("utf-8")
     yield ds_proc
-    # Shut it down at the end of the pytest session
-    ds_proc.terminate()
-
-
-@pytest.fixture(scope="session")
-def ds_localhost_https_server(tmp_path_factory):
-    cert_directory = tmp_path_factory.mktemp("certs")
-    ca = trustme.CA()
-    server_cert = ca.issue_cert("localhost")
-    keyfile = str(cert_directory / "server.key")
-    certfile = str(cert_directory / "server.pem")
-    client_cert = str(cert_directory / "client.pem")
-    server_cert.private_key_pem.write_to_path(path=keyfile)
-    for blob in server_cert.cert_chain_pems:
-        blob.write_to_path(path=certfile, append=True)
-    ca.cert_pem.write_to_path(path=client_cert)
-    ds_proc = subprocess.Popen(
-        [
-            "datasette",
-            "--memory",
-            "-p",
-            "8042",
-            "--ssl-keyfile",
-            keyfile,
-            "--ssl-certfile",
-            certfile,
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=tempfile.gettempdir(),
-    )
-    while True:
-        try:
-            httpx.get("https://localhost:8042/", verify=client_cert)
-            break
-        except httpx.ConnectError:
-            time.sleep(0.1)
-    # Check it started successfully
-    assert not ds_proc.poll(), ds_proc.stdout.read().decode("utf-8")
-    yield ds_proc, client_cert
     # Shut it down at the end of the pytest session
     ds_proc.terminate()
 
@@ -181,12 +196,7 @@ def ds_unix_domain_socket_server(tmp_path_factory):
     # Poll until available
     transport = httpx.HTTPTransport(uds=uds)
     client = httpx.Client(transport=transport)
-    while True:
-        try:
-            client.get("http://localhost/_memory.json")
-            break
-        except httpx.ConnectError:
-            time.sleep(0.1)
+    wait_until_responds("http://localhost/_memory.json", client=client)
     # Check it started successfully
     assert not ds_proc.poll(), ds_proc.stdout.read().decode("utf-8")
     yield ds_proc, uds

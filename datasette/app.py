@@ -1,5 +1,5 @@
 import asyncio
-from typing import Sequence, Union, Tuple, Optional
+from typing import Sequence, Union, Tuple, Optional, Dict, Iterable
 import asgi_csrf
 import collections
 import datetime
@@ -16,6 +16,7 @@ import re
 import secrets
 import sys
 import threading
+import time
 import urllib.parse
 from concurrent import futures
 from pathlib import Path
@@ -40,7 +41,7 @@ from .views.special import (
     PermissionsDebugView,
     MessagesDebugView,
 )
-from .views.table import TableView, TableInsertView, TableDropView
+from .views.table import TableView, TableInsertView, TableUpsertView, TableDropView
 from .views.row import RowView, RowDeleteView, RowUpdateView
 from .renderer import json_renderer
 from .url_builder import Urls
@@ -69,7 +70,6 @@ from .utils import (
 )
 from .utils.asgi import (
     AsgiLifespan,
-    Base400,
     Forbidden,
     NotFound,
     DatabaseNotFound,
@@ -77,11 +77,10 @@ from .utils.asgi import (
     RowNotFound,
     Request,
     Response,
+    AsgiRunOnFirstRequest,
     asgi_static,
     asgi_send,
     asgi_send_file,
-    asgi_send_html,
-    asgi_send_json,
     asgi_send_redirect,
 )
 from .utils.internal_db import init_internal_db, populate_schema_tables
@@ -194,6 +193,8 @@ DEFAULT_SETTINGS = {option.name: option.default for option in SETTINGS}
 
 FAVICON_PATH = app_root / "datasette" / "static" / "favicon.png"
 
+DEFAULT_NOT_SET = object()
+
 
 async def favicon(request, send):
     await asgi_send_file(
@@ -264,6 +265,7 @@ class Datasette:
         self.inspect_data = inspect_data
         self.immutables = set(immutables or [])
         self.databases = collections.OrderedDict()
+        self.permissions = {}  # .invoke_startup() will populate this
         try:
             self._refresh_schemas_lock = asyncio.Lock()
         except RuntimeError as rex:
@@ -430,6 +432,24 @@ class Datasette:
         # This must be called for Datasette to be in a usable state
         if self._startup_invoked:
             return
+        # Register permissions, but watch out for duplicate name/abbr
+        names = {}
+        abbrs = {}
+        for hook in pm.hook.register_permissions(datasette=self):
+            if hook:
+                for p in hook:
+                    if p.name in names and p != names[p.name]:
+                        raise StartupError(
+                            "Duplicate permission name: {}".format(p.name)
+                        )
+                    if p.abbr and p.abbr in abbrs and p != abbrs[p.abbr]:
+                        raise StartupError(
+                            "Duplicate permission abbr: {}".format(p.abbr)
+                        )
+                    names[p.name] = p
+                    if p.abbr:
+                        abbrs[p.abbr] = p
+                    self.permissions[p.name] = p
         for hook in pm.hook.prepare_jinja2_environment(
             env=self.jinja_env, datasette=self
         ):
@@ -443,6 +463,45 @@ class Datasette:
 
     def unsign(self, signed, namespace="default"):
         return URLSafeSerializer(self._secret, namespace).loads(signed)
+
+    def create_token(
+        self,
+        actor_id: str,
+        *,
+        expires_after: Optional[int] = None,
+        restrict_all: Optional[Iterable[str]] = None,
+        restrict_database: Optional[Dict[str, Iterable[str]]] = None,
+        restrict_resource: Optional[Dict[str, Dict[str, Iterable[str]]]] = None,
+    ):
+        token = {"a": actor_id, "t": int(time.time())}
+        if expires_after:
+            token["d"] = expires_after
+
+        def abbreviate_action(action):
+            # rename to abbr if possible
+            permission = self.permissions.get(action)
+            if not permission:
+                return action
+            return permission.abbr or action
+
+        if expires_after:
+            token["d"] = expires_after
+        if restrict_all or restrict_database or restrict_resource:
+            token["_r"] = {}
+            if restrict_all:
+                token["_r"]["a"] = [abbreviate_action(a) for a in restrict_all]
+            if restrict_database:
+                token["_r"]["d"] = {}
+                for database, actions in restrict_database.items():
+                    token["_r"]["d"][database] = [abbreviate_action(a) for a in actions]
+            if restrict_resource:
+                token["_r"]["r"] = {}
+                for database, resources in restrict_resource.items():
+                    for resource, actions in resources.items():
+                        token["_r"]["r"].setdefault(database, {})[resource] = [
+                            abbreviate_action(a) for a in actions
+                        ]
+        return "dstok_{}".format(self.sign(token, namespace="token"))
 
     def get_database(self, name=None, route=None):
         if route is not None:
@@ -668,9 +727,7 @@ class Datasette:
         if request:
             actor = request.actor
         # Top-level link
-        if await self.permission_allowed(
-            actor=actor, action="view-instance", default=True
-        ):
+        if await self.permission_allowed(actor=actor, action="view-instance"):
             crumbs.append({"href": self.urls.instance(), "label": "home"})
         # Database link
         if database:
@@ -678,7 +735,6 @@ class Datasette:
                 actor=actor,
                 action="view-database",
                 resource=database,
-                default=True,
             ):
                 crumbs.append(
                     {
@@ -693,7 +749,6 @@ class Datasette:
                 actor=actor,
                 action="view-table",
                 resource=(database, table),
-                default=True,
             ):
                 crumbs.append(
                     {
@@ -703,9 +758,14 @@ class Datasette:
                 )
         return crumbs
 
-    async def permission_allowed(self, actor, action, resource=None, default=False):
+    async def permission_allowed(
+        self, actor, action, resource=None, default=DEFAULT_NOT_SET
+    ):
         """Check permissions using the permissions_allowed plugin hook"""
         result = None
+        # Use default from registered permission, if available
+        if default is DEFAULT_NOT_SET and action in self.permissions:
+            default = self.permissions[action].default
         for check in pm.hook.permission_allowed(
             datasette=self,
             actor=actor,
@@ -1240,7 +1300,9 @@ class Datasette:
             r"/-/databases(\.(?P<format>json))?$",
         )
         add_route(
-            JsonDataView.as_view(self, "actor.json", self._actor, needs_request=True),
+            JsonDataView.as_view(
+                self, "actor.json", self._actor, needs_request=True, permission=None
+            ),
             r"/-/actor(\.(?P<format>json))?$",
         )
         add_route(
@@ -1291,6 +1353,10 @@ class Datasette:
         add_route(
             TableInsertView.as_view(self),
             r"/(?P<database>[^\/\.]+)/(?P<table>[^\/\.]+)/-/insert$",
+        )
+        add_route(
+            TableUpsertView.as_view(self),
+            r"/(?P<database>[^\/\.]+)/(?P<table>[^\/\.]+)/-/upsert$",
         )
         add_route(
             TableDropView.as_view(self),
@@ -1352,7 +1418,7 @@ class Datasette:
 
         async def setup_db():
             # First time server starts up, calculate table counts for immutable databases
-            for dbname, database in self.databases.items():
+            for database in self.databases.values():
                 if not database.is_mutable:
                     await database.table_counts(limit=60 * 60 * 1000)
 
@@ -1366,10 +1432,8 @@ class Datasette:
         )
         if self.setting("trace_debug"):
             asgi = AsgiTracer(asgi)
-        asgi = AsgiLifespan(
-            asgi,
-            on_startup=setup_db,
-        )
+        asgi = AsgiLifespan(asgi)
+        asgi = AsgiRunOnFirstRequest(asgi, on_startup=[setup_db, self.invoke_startup])
         for wrapper in pm.hook.asgi_wrapper(datasette=self):
             asgi = wrapper(asgi)
         return asgi
@@ -1650,6 +1714,10 @@ class DatasetteClient:
         self.ds = ds
         self.app = ds.app()
 
+    def actor_cookie(self, actor):
+        # Utility method, mainly for tests
+        return self.ds.sign({"a": actor}, "actor")
+
     def _fix(self, path, avoid_path_rewrites=False):
         if not isinstance(path, PrefixedUrlString) and not avoid_path_rewrites:
             path = self.ds.urls.path(path)
@@ -1658,42 +1726,34 @@ class DatasetteClient:
         return path
 
     async def get(self, path, **kwargs):
-        await self.ds.invoke_startup()
         async with httpx.AsyncClient(app=self.app) as client:
             return await client.get(self._fix(path), **kwargs)
 
     async def options(self, path, **kwargs):
-        await self.ds.invoke_startup()
         async with httpx.AsyncClient(app=self.app) as client:
             return await client.options(self._fix(path), **kwargs)
 
     async def head(self, path, **kwargs):
-        await self.ds.invoke_startup()
         async with httpx.AsyncClient(app=self.app) as client:
             return await client.head(self._fix(path), **kwargs)
 
     async def post(self, path, **kwargs):
-        await self.ds.invoke_startup()
         async with httpx.AsyncClient(app=self.app) as client:
             return await client.post(self._fix(path), **kwargs)
 
     async def put(self, path, **kwargs):
-        await self.ds.invoke_startup()
         async with httpx.AsyncClient(app=self.app) as client:
             return await client.put(self._fix(path), **kwargs)
 
     async def patch(self, path, **kwargs):
-        await self.ds.invoke_startup()
         async with httpx.AsyncClient(app=self.app) as client:
             return await client.patch(self._fix(path), **kwargs)
 
     async def delete(self, path, **kwargs):
-        await self.ds.invoke_startup()
         async with httpx.AsyncClient(app=self.app) as client:
             return await client.delete(self._fix(path), **kwargs)
 
     async def request(self, method, path, **kwargs):
-        await self.ds.invoke_startup()
         avoid_path_rewrites = kwargs.pop("avoid_path_rewrites", None)
         async with httpx.AsyncClient(app=self.app) as client:
             return await client.request(

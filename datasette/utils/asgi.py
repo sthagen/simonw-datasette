@@ -449,3 +449,18 @@ class AsgiFileDownload:
             content_type=self.content_type,
             headers=self.headers,
         )
+
+
+class AsgiRunOnFirstRequest:
+    def __init__(self, asgi, on_startup):
+        assert isinstance(on_startup, list)
+        self.asgi = asgi
+        self.on_startup = on_startup
+        self._started = False
+
+    async def __call__(self, scope, receive, send):
+        if not self._started:
+            self._started = True
+            for hook in self.on_startup:
+                await hook()
+        return await self.asgi(scope, receive, send)

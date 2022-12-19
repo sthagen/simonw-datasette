@@ -527,7 +527,7 @@ To insert multiple rows at a time, use the same API method but send a list of di
         ]
     }
 
-If successful, this will return a ``201`` status code and an empty ``{}`` response body.
+If successful, this will return a ``201`` status code and a ``{"ok": true}`` response body.
 
 To return the newly inserted rows, add the ``"return": true`` key to the request body:
 
@@ -582,6 +582,116 @@ Pass ``"ignore": true`` to ignore these errors and insert the other rows:
 
 Or you can pass ``"replace": true`` to replace any rows with conflicting primary keys with the new values.
 
+.. _TableUpsertView:
+
+Upserting rows
+~~~~~~~~~~~~~~
+
+An upsert is an insert or update operation. If a row with a matching primary key already exists it will be updated - otherwise a new row will be inserted.
+
+The upsert API is mostly the same shape as the :ref:`insert API <TableInsertView>`. It requires both the :ref:`permissions_insert_row` and :ref:`permissions_update_row` permissions.
+
+::
+
+    POST /<database>/<table>/-/upsert
+    Content-Type: application/json
+    Authorization: Bearer dstok_<rest-of-token>
+
+.. code-block:: json
+
+    {
+        "rows": [
+            {
+                "id": 1,
+                "title": "Updated title for 1",
+                "description": "Updated description for 1"
+            },
+            {
+                "id": 2,
+                "description": "Updated description for 2",
+            },
+            {
+                "id": 3,
+                "title": "Item 3",
+                "description": "Description for 3"
+            }
+        ]
+    }
+
+Imagine a table with a primary key of ``id`` and which already has rows with ``id`` values of ``1`` and ``2``.
+
+The above example will:
+
+- Update the row with ``id`` of ``1`` to set both ``title`` and ``description`` to the new values
+- Update the row with ``id`` of ``2`` to set ``title`` to the new value - ``description`` will be left unchanged
+- Insert a new row with ``id`` of ``3`` and both ``title`` and ``description`` set to the new values
+
+Similar to ``/-/insert``, a ``row`` key with an object can be used instead of a ``rows`` array to upsert a single row.
+
+If successful, this will return a ``200`` status code and a ``{"ok": true}`` response body.
+
+Add ``"return": true`` to the request body to return full copies of the affected rows after they have been inserted or updated:
+
+.. code-block:: json
+
+    {
+        "rows": [
+            {
+                "id": 1,
+                "title": "Updated title for 1",
+                "description": "Updated description for 1"
+            },
+            {
+                "id": 2,
+                "description": "Updated description for 2",
+            },
+            {
+                "id": 3,
+                "title": "Item 3",
+                "description": "Description for 3"
+            }
+        ],
+        "return": true
+    }
+
+This will return the following:
+
+.. code-block:: json
+
+    {
+        "ok": true,
+        "rows": [
+            {
+                "id": 1,
+                "title": "Updated title for 1",
+                "description": "Updated description for 1"
+            },
+            {
+                "id": 2,
+                "title": "Item 2",
+                "description": "Updated description for 2"
+            },
+            {
+                "id": 3,
+                "title": "Item 3",
+                "description": "Description for 3"
+            }
+        ]
+    }
+
+When using upsert you must provide the primary key column (or columns if the table has a compound primary key) for every row, or you will get a ``400`` error:
+
+.. code-block:: json
+
+    {
+        "ok": false,
+        "errors": [
+            "Row 0 is missing primary key column(s): \"id\""
+        ]
+    }
+
+If your table does not have an explicit primary key you should pass the SQLite ``rowid`` key instead.
+
 .. _RowUpdateView:
 
 Updating a row
@@ -605,7 +715,7 @@ To update a row, make a ``POST`` to ``/<database>/<table>/<row-pks>/-/update``. 
         }
     }
 
-``<row-pks>`` here is the :ref:`tilde-encoded <internals_tilde_encoding>` primary key value of the row to delete - or a comma-separated list of primary key values if the table has a composite primary key.
+``<row-pks>`` here is the :ref:`tilde-encoded <internals_tilde_encoding>` primary key value of the row to update - or a comma-separated list of primary key values if the table has a composite primary key.
 
 You only need to pass the columns you want to update. Any other columns will be left unchanged.
 
@@ -720,7 +830,8 @@ If the table is successfully created this will return a ``201`` status code and 
 Creating a table from example data
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Instead of specifying ``columns`` directly you can instead pass a single example row or a list of rows. Datasette will create a table with a schema that matches those rows and insert them for you:
+Instead of specifying ``columns`` directly you can instead pass a single example ``row`` or a list of ``rows``.
+Datasette will create a table with a schema that matches those rows and insert them for you:
 
 ::
 
@@ -745,6 +856,8 @@ Instead of specifying ``columns`` directly you can instead pass a single example
         "pk": "id"
     }
 
+Doing this requires both the :ref:`permissions_create_table` and :ref:`permissions_insert_row` permissions.
+
 The ``201`` response here will be similar to the ``columns`` form, but will also include the number of rows that were inserted as ``row_count``:
 
 .. code-block:: json
@@ -758,6 +871,23 @@ The ``201`` response here will be similar to the ``columns`` form, but will also
         "schema": "CREATE TABLE [creatures] (\n   [id] INTEGER PRIMARY KEY,\n   [name] TEXT\n)",
         "row_count": 2
     }
+
+You can call the create endpoint multiple times for the same table provided you are specifying the table using the ``rows`` or ``row`` option. New rows will be inserted into the table each time. This means you can use this API if you are unsure if the relevant table has been created yet.
+
+If you pass a row to the create endpoint with a primary key that already exists you will get an error that looks like this:
+
+.. code-block:: json
+
+    {
+        "ok": false,
+        "errors": [
+            "UNIQUE constraint failed: creatures.id"
+        ]
+    }
+
+You can avoid this error by passing the same ``"ignore": true`` or ``"replace": true`` options to the create endpoint as you can to the :ref:`insert endpoint <TableInsertView>`.
+
+To use the ``"replace": true`` option you will also need the :ref:`permissions_update_row` permission.
 
 .. _TableDropView:
 

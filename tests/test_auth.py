@@ -1,4 +1,6 @@
+from bs4 import BeautifulSoup as Soup
 from .fixtures import app_client
+from .utils import cookie_was_deleted
 from click.testing import CliRunner
 from datasette.utils import baseconv
 from datasette.cli import cli
@@ -6,46 +8,43 @@ import pytest
 import time
 
 
-def test_auth_token(app_client):
+@pytest.mark.asyncio
+async def test_auth_token(ds_client):
     """The /-/auth-token endpoint sets the correct cookie"""
-    assert app_client.ds._root_token is not None
-    path = f"/-/auth-token?token={app_client.ds._root_token}"
-    response = app_client.get(
-        path,
-    )
-    assert 302 == response.status
+    assert ds_client.ds._root_token is not None
+    path = f"/-/auth-token?token={ds_client.ds._root_token}"
+    response = await ds_client.get(path)
+    assert response.status_code == 302
     assert "/" == response.headers["Location"]
-    assert {"a": {"id": "root"}} == app_client.ds.unsign(
+    assert {"a": {"id": "root"}} == ds_client.ds.unsign(
         response.cookies["ds_actor"], "actor"
     )
     # Check that a second with same token fails
-    assert app_client.ds._root_token is None
-    assert (
-        403
-        == app_client.get(
-            path,
-        ).status
-    )
+    assert ds_client.ds._root_token is None
+    assert (await ds_client.get(path)).status_code == 403
 
 
-def test_actor_cookie(app_client):
+@pytest.mark.asyncio
+async def test_actor_cookie(ds_client):
     """A valid actor cookie sets request.scope['actor']"""
-    cookie = app_client.actor_cookie({"id": "test"})
-    response = app_client.get("/", cookies={"ds_actor": cookie})
-    assert {"id": "test"} == app_client.ds._last_request.scope["actor"]
+    cookie = ds_client.actor_cookie({"id": "test"})
+    await ds_client.get("/", cookies={"ds_actor": cookie})
+    assert ds_client.ds._last_request.scope["actor"] == {"id": "test"}
 
 
-def test_actor_cookie_invalid(app_client):
-    cookie = app_client.actor_cookie({"id": "test"})
+@pytest.mark.asyncio
+async def test_actor_cookie_invalid(ds_client):
+    cookie = ds_client.actor_cookie({"id": "test"})
     # Break the signature
-    response = app_client.get("/", cookies={"ds_actor": cookie[:-1] + "."})
-    assert None == app_client.ds._last_request.scope["actor"]
+    await ds_client.get("/", cookies={"ds_actor": cookie[:-1] + "."})
+    assert ds_client.ds._last_request.scope["actor"] is None
     # Break the cookie format
-    cookie = app_client.ds.sign({"b": {"id": "test"}}, "actor")
-    response = app_client.get("/", cookies={"ds_actor": cookie})
-    assert None == app_client.ds._last_request.scope["actor"]
+    cookie = ds_client.ds.sign({"b": {"id": "test"}}, "actor")
+    await ds_client.get("/", cookies={"ds_actor": cookie})
+    assert ds_client.ds._last_request.scope["actor"] is None
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "offset,expected",
     [
@@ -53,16 +52,17 @@ def test_actor_cookie_invalid(app_client):
         (-(24 * 60 * 60), None),
     ],
 )
-def test_actor_cookie_that_expires(app_client, offset, expected):
+async def test_actor_cookie_that_expires(ds_client, offset, expected):
     expires_at = int(time.time()) + offset
-    cookie = app_client.ds.sign(
+    cookie = ds_client.ds.sign(
         {"a": {"id": "test"}, "e": baseconv.base62.encode(expires_at)}, "actor"
     )
-    response = app_client.get("/", cookies={"ds_actor": cookie})
-    assert expected == app_client.ds._last_request.scope["actor"]
+    response = await ds_client.get("/", cookies={"ds_actor": cookie})
+    assert ds_client.ds._last_request.scope["actor"] == expected
 
 
 def test_logout(app_client):
+    # Keeping app_client for the moment because of csrftoken_from
     response = app_client.get(
         "/-/logout", cookies={"ds_actor": app_client.actor_cookie({"id": "test"})}
     )
@@ -87,18 +87,19 @@ def test_logout(app_client):
         cookies={"ds_actor": app_client.actor_cookie({"id": "test"})},
     )
     # The ds_actor cookie should have been unset
-    assert response4.cookie_was_deleted("ds_actor")
+    assert cookie_was_deleted(response4, "ds_actor")
     # Should also have set a message
     messages = app_client.ds.unsign(response4.cookies["ds_messages"], "messages")
     assert [["You are now logged out", 2]] == messages
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/", "/fixtures", "/fixtures/facetable"])
-def test_logout_button_in_navigation(app_client, path):
-    response = app_client.get(
-        path, cookies={"ds_actor": app_client.actor_cookie({"id": "test"})}
+async def test_logout_button_in_navigation(ds_client, path):
+    response = await ds_client.get(
+        path, cookies={"ds_actor": ds_client.actor_cookie({"id": "test"})}
     )
-    anon_response = app_client.get(path)
+    anon_response = await ds_client.get(path)
     for fragment in (
         "<strong>test</strong>",
         '<form action="/-/logout" method="post">',
@@ -107,57 +108,71 @@ def test_logout_button_in_navigation(app_client, path):
         assert fragment not in anon_response.text
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/", "/fixtures", "/fixtures/facetable"])
-def test_no_logout_button_in_navigation_if_no_ds_actor_cookie(app_client, path):
-    response = app_client.get(path + "?_bot=1")
+async def test_no_logout_button_in_navigation_if_no_ds_actor_cookie(ds_client, path):
+    response = await ds_client.get(path + "?_bot=1")
     assert "<strong>bot</strong>" in response.text
     assert '<form action="/-/logout" method="post">' not in response.text
 
 
 @pytest.mark.parametrize(
-    "post_data,errors,expected_duration",
+    "post_data,errors,expected_duration,expected_r",
     (
-        ({"expire_type": ""}, [], None),
-        ({"expire_type": "x"}, ["Invalid expire duration"], None),
-        ({"expire_type": "minutes"}, ["Invalid expire duration"], None),
+        ({"expire_type": ""}, [], None, None),
+        ({"expire_type": "x"}, ["Invalid expire duration"], None, None),
+        ({"expire_type": "minutes"}, ["Invalid expire duration"], None, None),
         (
             {"expire_type": "minutes", "expire_duration": "x"},
             ["Invalid expire duration"],
+            None,
             None,
         ),
         (
             {"expire_type": "minutes", "expire_duration": "-1"},
             ["Invalid expire duration"],
             None,
+            None,
         ),
         (
             {"expire_type": "minutes", "expire_duration": "0"},
             ["Invalid expire duration"],
             None,
+            None,
         ),
+        ({"expire_type": "minutes", "expire_duration": "10"}, [], 600, None),
+        ({"expire_type": "hours", "expire_duration": "10"}, [], 10 * 60 * 60, None),
+        ({"expire_type": "days", "expire_duration": "3"}, [], 60 * 60 * 24 * 3, None),
+        # Token restrictions
+        ({"all:view-instance": "on"}, [], None, {"a": ["vi"]}),
+        ({"database:fixtures:view-query": "on"}, [], None, {"d": {"fixtures": ["vq"]}}),
         (
-            {"expire_type": "minutes", "expire_duration": "10"},
+            {"resource:fixtures:facetable:insert-row": "on"},
             [],
-            600,
-        ),
-        (
-            {"expire_type": "hours", "expire_duration": "10"},
-            [],
-            10 * 60 * 60,
-        ),
-        (
-            {"expire_type": "days", "expire_duration": "3"},
-            [],
-            60 * 60 * 24 * 3,
+            None,
+            {"r": {"fixtures": {"facetable": ["ir"]}}},
         ),
     ),
 )
-def test_auth_create_token(app_client, post_data, errors, expected_duration):
+def test_auth_create_token(
+    app_client, post_data, errors, expected_duration, expected_r
+):
     assert app_client.get("/-/create-token").status == 403
     ds_actor = app_client.actor_cookie({"id": "test"})
     response = app_client.get("/-/create-token", cookies={"ds_actor": ds_actor})
     assert response.status == 200
     assert ">Create an API token<" in response.text
+    # Confirm some aspects of expected set of checkboxes
+    soup = Soup(response.text, "html.parser")
+    checkbox_names = {el["name"] for el in soup.select('input[type="checkbox"]')}
+    assert checkbox_names.issuperset(
+        {
+            "all:view-instance",
+            "all:view-query",
+            "database:fixtures:drop-table",
+            "resource:fixtures:foreign_key_references:insert-row",
+        }
+    )
     # Now try actually creating one
     response2 = app_client.post(
         "/-/create-token",
@@ -173,6 +188,9 @@ def test_auth_create_token(app_client, post_data, errors, expected_duration):
         # Extract token from page
         token = response2.text.split('value="dstok_')[1].split('"')[0]
         details = app_client.ds.unsign(token, "token")
+        if expected_r:
+            r = details.pop("_r")
+            assert r == expected_r
         assert details.keys() == {"a", "t", "d"} or details.keys() == {"a", "t"}
         assert details["a"] == "test"
         if expected_duration is None:
@@ -188,25 +206,30 @@ def test_auth_create_token(app_client, post_data, errors, expected_duration):
         assert response3.json["actor"]["id"] == "test"
 
 
-def test_auth_create_token_not_allowed_for_tokens(app_client):
-    ds_tok = app_client.ds.sign({"a": "test", "token": "dstok"}, "token")
-    response = app_client.get(
+@pytest.mark.asyncio
+async def test_auth_create_token_not_allowed_for_tokens(ds_client):
+    ds_tok = ds_client.ds.sign({"a": "test", "token": "dstok"}, "token")
+    response = await ds_client.get(
         "/-/create-token",
         headers={"Authorization": "Bearer dstok_{}".format(ds_tok)},
     )
-    assert response.status == 403
+    assert response.status_code == 403
 
 
-def test_auth_create_token_not_allowed_if_allow_signed_tokens_off(app_client):
-    app_client.ds._settings["allow_signed_tokens"] = False
+@pytest.mark.asyncio
+async def test_auth_create_token_not_allowed_if_allow_signed_tokens_off(ds_client):
+    ds_client.ds._settings["allow_signed_tokens"] = False
     try:
-        ds_actor = app_client.actor_cookie({"id": "test"})
-        response = app_client.get("/-/create-token", cookies={"ds_actor": ds_actor})
-        assert response.status == 403
+        ds_actor = ds_client.actor_cookie({"id": "test"})
+        response = await ds_client.get(
+            "/-/create-token", cookies={"ds_actor": ds_actor}
+        )
+        assert response.status_code == 403
     finally:
-        app_client.ds._settings["allow_signed_tokens"] = True
+        ds_client.ds._settings["allow_signed_tokens"] = True
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "scenario,should_work",
     (
@@ -219,31 +242,32 @@ def test_auth_create_token_not_allowed_if_allow_signed_tokens_off(app_client):
         ("valid_expiring_token", True),
     ),
 )
-def test_auth_with_dstok_token(app_client, scenario, should_work):
+async def test_auth_with_dstok_token(ds_client, scenario, should_work):
     token = None
     _time = int(time.time())
     if scenario in ("valid_unlimited_token", "allow_signed_tokens_off"):
-        token = app_client.ds.sign({"a": "test", "t": _time}, "token")
+        token = ds_client.ds.sign({"a": "test", "t": _time}, "token")
     elif scenario == "valid_expiring_token":
-        token = app_client.ds.sign({"a": "test", "t": _time - 50, "d": 1000}, "token")
+        token = ds_client.ds.sign({"a": "test", "t": _time - 50, "d": 1000}, "token")
     elif scenario == "expired_token":
-        token = app_client.ds.sign({"a": "test", "t": _time - 2000, "d": 1000}, "token")
+        token = ds_client.ds.sign({"a": "test", "t": _time - 2000, "d": 1000}, "token")
     elif scenario == "no_timestamp":
-        token = app_client.ds.sign({"a": "test"}, "token")
+        token = ds_client.ds.sign({"a": "test"}, "token")
     elif scenario == "invalid_token":
         token = "invalid"
     if token:
         token = "dstok_{}".format(token)
     if scenario == "allow_signed_tokens_off":
-        app_client.ds._settings["allow_signed_tokens"] = False
+        ds_client.ds._settings["allow_signed_tokens"] = False
     headers = {}
     if token:
         headers["Authorization"] = "Bearer {}".format(token)
-    response = app_client.get("/-/actor.json", headers=headers)
+    response = await ds_client.get("/-/actor.json", headers=headers)
     try:
         if should_work:
-            assert response.json.keys() == {"actor"}
-            actor = response.json["actor"]
+            data = response.json()
+            assert data.keys() == {"actor"}
+            actor = data["actor"]
             expected_keys = {"id", "token"}
             if scenario != "valid_unlimited_token":
                 expected_keys.add("token_expires")
@@ -253,9 +277,9 @@ def test_auth_with_dstok_token(app_client, scenario, should_work):
             if scenario != "valid_unlimited_token":
                 assert isinstance(actor["token_expires"], int)
         else:
-            assert response.json == {"actor": None}
+            assert response.json() == {"actor": None}
     finally:
-        app_client.ds._settings["allow_signed_tokens"] = True
+        ds_client.ds._settings["allow_signed_tokens"] = True
 
 
 @pytest.mark.parametrize("expires", (None, 1000, -1000))
@@ -270,7 +294,7 @@ def test_cli_create_token(app_client, expires):
     token = result.output.strip()
     assert token.startswith("dstok_")
     details = app_client.ds.unsign(token[len("dstok_") :], "token")
-    expected_keys = {"a", "token", "t"}
+    expected_keys = {"a", "t"}
     if expires:
         expected_keys.add("d")
     assert details.keys() == expected_keys

@@ -16,6 +16,11 @@ class TestResponse:
     def status(self):
         return self.httpx_response.status_code
 
+    # Supports both for test-writing convenience
+    @property
+    def status_code(self):
+        return self.status
+
     @property
     def headers(self):
         return self.httpx_response.headers
@@ -25,15 +30,12 @@ class TestResponse:
         return self.httpx_response.content
 
     @property
+    def content(self):
+        return self.body
+
+    @property
     def cookies(self):
         return dict(self.httpx_response.cookies)
-
-    def cookie_was_deleted(self, cookie):
-        return any(
-            h
-            for h in self.httpx_response.headers.get_list("set-cookie")
-            if h.startswith(f'{cookie}="";')
-        )
 
     @property
     def json(self):

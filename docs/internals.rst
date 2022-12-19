@@ -273,6 +273,15 @@ The dictionary keys are the name of the database that is used in the URL - e.g. 
 
 All databases are listed, irrespective of user permissions. This means that the ``_internal`` database will always be listed here.
 
+.. _datasette_permissions:
+
+.permissions
+------------
+
+Property exposing a dictionary of permissions that have been registered using the :ref:`plugin_register_permissions` plugin hook.
+
+The dictionary keys are the permission names - e.g. ``view-instance`` - and the values are ``Permission()`` named tuples describing the permission. Here is a :ref:`description of that tuple <plugin_register_permissions>`.
+
 .. _datasette_plugin_config:
 
 .plugin_config(plugin_name, database=None, table=None)
@@ -315,8 +324,8 @@ Renders a `Jinja template <https://jinja.palletsprojects.com/en/2.11.x/>`__ usin
 
 .. _datasette_permission_allowed:
 
-await .permission_allowed(actor, action, resource=None, default=False)
-----------------------------------------------------------------------
+await .permission_allowed(actor, action, resource=None, default=...)
+--------------------------------------------------------------------
 
 ``actor`` - dictionary
     The authenticated actor. This is usually ``request.actor``.
@@ -327,8 +336,10 @@ await .permission_allowed(actor, action, resource=None, default=False)
 ``resource`` - string or tuple, optional
     The resource, e.g. the name of the database, or a tuple of two strings containing the name of the database and the name of the table. Only some permissions apply to a resource.
 
-``default`` - optional, True or False
-    Should this permission check be default allow or default deny.
+``default`` - optional: True, False or None
+    What value should be returned by default if nothing provides an opinion on this permission check.
+    Set to ``True`` for default allow or ``False`` for default deny.
+    If not specified the ``default`` from the ``Permission()`` tuple that was registered using :ref:`plugin_register_permissions` will be used.
 
 Check if the given actor has :ref:`permission <authentication_permissions>` to perform the given action on the given resource.
 
@@ -406,6 +417,56 @@ The following example runs three checks in a row, similar to :ref:`datasette_ens
             ("view-database", database),
             "view-instance",
         ],
+    )
+
+.. _datasette_create_token:
+
+.create_token(actor_id, expires_after=None, restrict_all=None, restrict_database=None, restrict_resource=None)
+--------------------------------------------------------------------------------------------------------------
+
+``actor_id`` - string
+    The ID of the actor to create a token for.
+
+``expires_after`` - int, optional
+    The number of seconds after which the token should expire.
+
+``restrict_all`` - iterable, optional
+    A list of actions that this token should be restricted to across all databases and resources.
+
+``restrict_database`` - dict, optional
+    For restricting actions within specific databases, e.g. ``{"mydb": ["view-table", "view-query"]}``.
+
+``restrict_resource`` - dict, optional
+    For restricting actions to specific resources (tables, SQL views and :ref:`canned_queries`) within a database. For example: ``{"mydb": {"mytable": ["insert-row", "update-row"]}}``.
+
+This method returns a signed :ref:`API token <CreateTokenView>` of the format ``dstok_...`` which can be used to authenticate requests to the Datasette API.
+
+All tokens must have an ``actor_id`` string indicating the ID of the actor which the token will act on behalf of.
+
+Tokens default to lasting forever, but can be set to expire after a given number of seconds using the ``expires_after`` argument. The following code creates a token for ``user1`` that will expire after an hour:
+
+.. code-block:: python
+
+    token = datasette.create_token(
+        actor_id="user1",
+        expires_after=3600,
+    )
+
+The three ``restrict_*`` arguments can be used to create a token that has additional restrictions beyond what the associated actor is allowed to do.
+
+The following example creates a token that can access ``view-instance`` and ``view-table`` across everything, can additionally use ``view-query`` for anything in the ``docs`` database and is allowed to execute ``insert-row`` and ``update-row`` in the ``attachments`` table in that database:
+
+.. code-block:: python
+
+    token = datasette.create_token(
+        actor_id="user1",
+        restrict_all=("view-instance", "view-table"),
+        restrict_database={"docs": ("view-query",)},
+        restrict_resource={
+            "docs": {
+                "attachments": ("insert-row", "update-row")
+            }
+        },
     )
 
 .. _datasette_get_database:

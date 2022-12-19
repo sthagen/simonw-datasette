@@ -138,7 +138,7 @@ class DatabaseView(DataView):
         attached_databases = [d.name for d in await db.attached_databases()]
 
         allow_execute_sql = await self.ds.permission_allowed(
-            request.actor, "execute-sql", database, default=True
+            request.actor, "execute-sql", database
         )
         return (
             {
@@ -375,7 +375,7 @@ class QueryView(DataView):
                 columns = []
 
         allow_execute_sql = await self.ds.permission_allowed(
-            request.actor, "execute-sql", database, default=True
+            request.actor, "execute-sql", database
         )
 
         async def extra_template():
@@ -605,8 +605,20 @@ class TableCreateView(BaseView):
             if not data.get("row") and not data.get("rows"):
                 return _error(["ignore and replace require row or rows"])
 
+        # ignore and replace require pk or pks
+        if "ignore" in data or "replace" in data:
+            if not data.get("pk") and not data.get("pks"):
+                return _error(["ignore and replace require pk or pks"])
+
         ignore = data.get("ignore")
         replace = data.get("replace")
+
+        if replace:
+            # Must have update-row permission
+            if not await self.ds.permission_allowed(
+                request.actor, "update-row", resource=database_name
+            ):
+                return _error(["Permission denied - need update-row"], 403)
 
         table_name = data.get("table")
         if not table_name:
@@ -615,6 +627,7 @@ class TableCreateView(BaseView):
         if not self._table_name_re.match(table_name):
             return _error(["Invalid table name"])
 
+        table_exists = await db.table_exists(data["table"])
         columns = data.get("columns")
         rows = data.get("rows")
         row = data.get("row")
@@ -623,6 +636,13 @@ class TableCreateView(BaseView):
 
         if rows and row:
             return _error(["Cannot specify both rows and row"])
+
+        if rows or row:
+            # Must have insert-row permission
+            if not await self.ds.permission_allowed(
+                request.actor, "insert-row", resource=database_name
+            ):
+                return _error(["Permission denied - need insert-row"], 403)
 
         if columns:
             if rows or row:
@@ -671,8 +691,21 @@ class TableCreateView(BaseView):
                     return _error(["pks must be a list of strings"])
 
         # If table exists already, read pks from that instead
-        if await db.table_exists(table_name):
-            pks = await db.primary_keys(table_name)
+        if table_exists:
+            actual_pks = await db.primary_keys(table_name)
+            # if pk passed and table already exists check it does not change
+            bad_pks = False
+            if len(actual_pks) == 1 and data.get("pk") and data["pk"] != actual_pks[0]:
+                bad_pks = True
+            elif (
+                len(actual_pks) > 1
+                and data.get("pks")
+                and set(data["pks"]) != set(actual_pks)
+            ):
+                bad_pks = True
+            if bad_pks:
+                return _error(["pk cannot be changed for existing table"])
+            pks = actual_pks
 
         def create_table(conn):
             table = sqlite_utils.Database(conn)[table_name]
