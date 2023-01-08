@@ -313,7 +313,13 @@ To limit access to the ``add_name`` canned query in your ``dogs.db`` database to
 Controlling the ability to execute arbitrary SQL
 ------------------------------------------------
 
-The ``"allow_sql"`` block can be used to control who is allowed to execute arbitrary SQL queries, both using the form on the database page e.g. https://latest.datasette.io/fixtures or by appending a ``?_where=`` parameter to the table page as seen on https://latest.datasette.io/fixtures/facetable?_where=city_id=1.
+Datasette defaults to allowing any site visitor to execute their own custom SQL queries, for example using the form on `the database page <https://latest.datasette.io/fixtures>`__ or by appending a ``?_where=`` parameter to the table page `like this <https://latest.datasette.io/fixtures/facetable?_where=_city_id=1>`__.
+
+Access to this ability is controlled by the :ref:`permissions_execute_sql` permission.
+
+The easiest way to disable arbitrary SQL queries is using the :ref:`default_allow_sql setting <setting_default_allow_sql>` when you first start Datasette running.
+
+You can alternatively use an ``"allow_sql"`` block to control who is allowed to execute arbitrary SQL queries.
 
 To enable just the :ref:`root user<authentication_root>` to execute SQL for all databases in your instance, use the following:
 
@@ -442,7 +448,7 @@ You can also create tokens on the command line using the ``datasette create-toke
 
 This command takes one required argument - the ID of the actor to be associated with the created token.
 
-You can specify an ``--expires-after`` option in seconds. If omitted, the token will never expire.
+You can specify a ``-e/--expires-after`` option in seconds. If omitted, the token will never expire.
 
 The command will sign the token using the ``DATASETTE_SECRET`` environment variable, if available. You can also pass the secret using the ``--secret`` option.
 
@@ -770,7 +776,7 @@ Actor is allowed to run arbitrary SQL queries against a specific database, e.g. 
 ``resource`` - string
     The name of the database
 
-Default *allow*.
+Default *allow*. See also :ref:`the default_allow_sql setting <setting_default_allow_sql>`.
 
 .. _permissions_permissions_debug:
 

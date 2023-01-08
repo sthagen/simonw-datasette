@@ -821,6 +821,7 @@ async def test_settings_json(ds_client):
     assert response.json() == {
         "default_page_size": 50,
         "default_facet_size": 30,
+        "default_allow_sql": True,
         "facet_suggest_time_limit_ms": 50,
         "facet_time_limit_ms": 200,
         "max_returned_rows": 100,
@@ -890,7 +891,7 @@ async def test_json_columns(ds_client, extra_args, expected):
 
 def test_config_cache_size(app_client_larger_cache_size):
     response = app_client_larger_cache_size.get("/fixtures/pragma_cache_size.json")
-    assert [[-2500]] == response.json["rows"]
+    assert response.json["rows"] == [{"cache_size": -2500}]
 
 
 def test_config_force_https_urls():
@@ -981,7 +982,7 @@ def test_common_prefix_database_names(app_client_conflicting_database_names):
 
 def test_inspect_file_used_for_count(app_client_immutable_and_inspect_file):
     response = app_client_immutable_and_inspect_file.get("/fixtures/sortable.json")
-    assert response.json["filtered_table_rows_count"] == 100
+    assert response.json["count"] == 100
 
 
 @pytest.mark.asyncio

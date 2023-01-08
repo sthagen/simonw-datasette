@@ -9,20 +9,6 @@ through the Datasette user interface can also be accessed as JSON via the API.
 To access the API for a page, either click on the ``.json`` link on that page or
 edit the URL and add a ``.json`` extension to it.
 
-If you started Datasette with the ``--cors`` option, each JSON endpoint will be
-served with the following additional HTTP headers::
-
-    Access-Control-Allow-Origin: *
-    Access-Control-Allow-Headers: Authorization, Content-Type
-    Access-Control-Expose-Headers: Link
-    Access-Control-Allow-Methods: GET, POST, HEAD, OPTIONS
-
-This means JavaScript running on any domain will be able to make cross-origin
-requests to fetch the data.
-
-If you start Datasette without the ``--cors`` option only JavaScript running on
-the same domain as Datasette will be able to access the API.
-
 .. _json_api_shapes:
 
 Different shapes
@@ -39,46 +25,6 @@ looks like this::
             "value"
         ],
         "rows": [
-            [
-                1,
-                "Myoporum laetum :: Myoporum"
-            ],
-            [
-                2,
-                "Metrosideros excelsa :: New Zealand Xmas Tree"
-            ],
-            [
-                3,
-                "Pinus radiata :: Monterey Pine"
-            ]
-        ],
-        "truncated": false,
-        "next": "100",
-        "next_url": "http://127.0.0.1:8001/sf-trees-02c8ef1/qSpecies.json?_next=100",
-        "query_ms": 1.9571781158447266
-    }
-
-The ``columns`` key lists the columns that are being returned, and the ``rows``
-key then returns a list of lists, each one representing a row. The order of the
-values in each row corresponds to the columns.
-
-The ``_shape`` parameter can be used to access alternative formats for the
-``rows`` key which may be more convenient for your application. There are three
-options:
-
-* ``?_shape=arrays`` - ``"rows"`` is the default option, shown above
-* ``?_shape=objects`` - ``"rows"`` is a list of JSON key/value objects
-* ``?_shape=array`` - an JSON array of objects
-* ``?_shape=array&_nl=on`` - a newline-separated list of JSON objects
-* ``?_shape=arrayfirst`` - a flat JSON array containing just the first value from each row
-* ``?_shape=object`` - a JSON object keyed using the primary keys of the rows
-
-``_shape=objects`` looks like this::
-
-    {
-        "database": "sf-trees",
-        ...
-        "rows": [
             {
                 "id": 1,
                 "value": "Myoporum laetum :: Myoporum"
@@ -91,6 +37,46 @@ options:
                 "id": 3,
                 "value": "Pinus radiata :: Monterey Pine"
             }
+        ],
+        "count": 195002,
+        "truncated": false,
+        "next": "100",
+        "next_url": "http://127.0.0.1:8001/sf-trees-02c8ef1/qSpecies.json?_next=100",
+        "query_ms": 1.9571781158447266
+    }
+
+The ``columns`` key lists the columns that are being returned, and the ``rows``
+key then returns a list of objects, each one representing a row.
+
+The ``_shape`` parameter can be used to access alternative formats for the
+``rows`` key which may be more convenient for your application. There are three
+options:
+
+* ``?_shape=objects`` - ``"rows"`` is a list of JSON key/value objects - the default
+* ``?_shape=arrays`` - ``"rows"`` is a list of lists, where the order of values in each list matches the order of the columns
+* ``?_shape=array`` - a JSON array of objects - effectively just the ``"rows"`` key from the default representation
+* ``?_shape=array&_nl=on`` - a newline-separated list of JSON objects
+* ``?_shape=arrayfirst`` - a flat JSON array containing just the first value from each row
+* ``?_shape=object`` - a JSON object keyed using the primary keys of the rows
+
+``_shape=arrays`` looks like this::
+
+    {
+        "database": "sf-trees",
+        ...
+        "rows": [
+            [
+                1,
+                "Myoporum laetum :: Myoporum"
+            ],
+            [
+                2,
+                "Metrosideros excelsa :: New Zealand Xmas Tree"
+            ],
+            [
+                3,
+                "Pinus radiata :: Monterey Pine"
+            ]
         ]
     }
 
@@ -358,8 +344,8 @@ Special table arguments
 
     Some examples:
 
-    * `facetable?_where=neighborhood like "%c%"&_where=city_id=3 <https://latest.datasette.io/fixtures/facetable?_where=neighborhood%20like%20%22%c%%22&_where=city_id=3>`__
-    * `facetable?_where=city_id in (select id from facet_cities where name != "Detroit") <https://latest.datasette.io/fixtures/facetable?_where=city_id%20in%20(select%20id%20from%20facet_cities%20where%20name%20!=%20%22Detroit%22)>`__
+    * `facetable?_where=_neighborhood like "%c%"&_where=_city_id=3 <https://latest.datasette.io/fixtures/facetable?_where=_neighborhood%20like%20%22%c%%22&_where=_city_id=3>`__
+    * `facetable?_where=_city_id in (select id from facet_cities where name != "Detroit") <https://latest.datasette.io/fixtures/facetable?_where=_city_id%20in%20(select%20id%20from%20facet_cities%20where%20name%20!=%20%22Detroit%22)>`__
 
 ``?_through={json}``
     This can be used to filter rows via a join against another table.
@@ -459,12 +445,35 @@ The JSON URL is also made available in a ``Link`` HTTP header for the page::
 
     Link: https://latest.datasette.io/fixtures/sortable.json; rel="alternate"; type="application/json+datasette"
 
+.. _json_api_cors:
+
+Enabling CORS
+-------------
+
+If you start Datasette with the ``--cors`` option, each JSON endpoint will be
+served with the following additional HTTP headers::
+
+    Access-Control-Allow-Origin: *
+    Access-Control-Allow-Headers: Authorization, Content-Type
+    Access-Control-Expose-Headers: Link
+    Access-Control-Allow-Methods: GET, POST, HEAD, OPTIONS
+
+This allows JavaScript running on any domain to make cross-origin
+requests to interact with the Datasette API.
+
+If you start Datasette without the ``--cors`` option only JavaScript running on
+the same domain as Datasette will be able to access the API.
+
+Here's how to serve ``data.db`` with CORS enabled::
+
+    datasette data.db --cors
+
 .. _json_api_write:
 
 The JSON write API
 ------------------
 
-Datasette provides a write API for JSON data. This is a POST-only API that requires an authenticated API token, see :ref:`CreateTokenView`.
+Datasette provides a write API for JSON data. This is a POST-only API that requires an authenticated API token, see :ref:`CreateTokenView`. The token will need to have the specified :ref:`authentication_permissions`.
 
 .. _TableInsertView:
 

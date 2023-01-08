@@ -373,8 +373,7 @@ class ApiExplorerView(BaseView):
                     {
                         "label": "Get rows for {}".format(table),
                         "method": "GET",
-                        "path": self.ds.urls.table(name, table, format="json")
-                        + "?_shape=objects".format(name, table),
+                        "path": self.ds.urls.table(name, table, format="json"),
                     }
                 )
                 # If not mutable don't show any write APIs
