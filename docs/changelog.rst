@@ -4,6 +4,25 @@
 Changelog
 =========
 
+.. _v0_64_1:
+
+0.64.1 (2023-01-11)
+-------------------
+
+- Documentation now links to a current source of information for installing Python 3. (:issue:`1987`)
+- Incorrectly calling the Datasette constructor using ``Datasette("path/to/data.db")`` instead of ``Datasette(["path/to/data.db"])`` now returns a useful error message. (:issue:`1985`)
+
+.. _v0_64:
+
+0.64 (2023-01-09)
+-----------------
+
+- Datasette now **strongly recommends against allowing arbitrary SQL queries if you are using SpatiaLite**. SpatiaLite includes SQL functions that could cause the Datasette server to crash. See :ref:`spatialite` for more details.
+- New :ref:`setting_default_allow_sql` setting, providing an easier way to disable all arbitrary SQL execution by end users: ``datasette --setting default_allow_sql off``. See also :ref:`authentication_permissions_execute_sql`. (:issue:`1409`)
+- `Building a location to time zone API with SpatiaLite <https://datasette.io/tutorials/spatialite>`__ is a new Datasette tutorial showing how to safely use SpatiaLite to create a location to time zone API.
+- New documentation about :ref:`how to debug problems loading SQLite extensions <installation_extensions>`. The error message shown when an extension cannot be loaded has also been improved. (:issue:`1979`)
+- Fixed an accessibility issue: the ``<select>`` elements in the table filter form now show an outline when they are currently focused. (:issue:`1771`)
+
 .. _v0_63_3:
 
 0.63.3 (2022-12-17)
