@@ -179,6 +179,23 @@ def test_install_upgrade(run_module, flag):
 
 
 @mock.patch("datasette.cli.run_module")
+def test_install_requirements(run_module, tmpdir):
+    path = tmpdir.join("requirements.txt")
+    path.write("datasette-mock-plugin\ndatasette-plugin-2")
+    runner = CliRunner()
+    runner.invoke(cli, ["install", "-r", str(path)])
+    run_module.assert_called_once_with("pip", run_name="__main__")
+    assert sys.argv == ["pip", "install", "-r", str(path)]
+
+
+def test_install_error_if_no_packages():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["install"])
+    assert result.exit_code == 2
+    assert "Error: Please specify at least one package to install" in result.output
+
+
+@mock.patch("datasette.cli.run_module")
 def test_uninstall(run_module):
     runner = CliRunner()
     runner.invoke(cli, ["uninstall", "datasette-mock-plugin", "-y"])
