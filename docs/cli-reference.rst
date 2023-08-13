@@ -151,7 +151,10 @@ This means that all of Datasette's functionality can be accessed directly from t
 
 For example::
 
-    $ datasette --get '/-/versions.json' | jq .
+    datasette --get '/-/versions.json' | jq .
+
+.. code-block:: json
+
     {
       "python": {
         "version": "3.8.5",
@@ -282,6 +285,7 @@ Output JSON showing all currently installed plugins, their versions, whether the
 
     Options:
       --all                    Include built-in default plugins
+      --requirements           Output requirements.txt of installed plugins
       --plugins-dir DIRECTORY  Path to directory containing custom plugins
       --help                   Show this message and exit.
 
@@ -350,10 +354,10 @@ Would install the `datasette-cluster-map <https://datasette.io/plugins/datasette
       Install plugins and packages from PyPI into the same environment as Datasette
 
     Options:
-      -U, --upgrade             Upgrade packages to latest version
-      -r, --requirement PATH    Install from requirements file
-      -e, --editable DIRECTORY  Install a project in editable mode from this path
-      --help                    Show this message and exit.
+      -U, --upgrade           Upgrade packages to latest version
+      -r, --requirement PATH  Install from requirements file
+      -e, --editable TEXT     Install a project in editable mode from this path
+      --help                  Show this message and exit.
 
 
 .. [[[end]]]

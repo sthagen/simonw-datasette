@@ -4,6 +4,58 @@
 Changelog
 =========
 
+.. _v1_0_a3:
+
+1.0a3 (2023-08-09)
+------------------
+
+This alpha release previews the updated design for Datasette's default JSON API. (:issue:`782`)
+
+The new :ref:`default JSON representation <json_api_default>` for both table pages (``/dbname/table.json``) and arbitrary SQL queries (``/dbname.json?sql=...``) is now shaped like this:
+
+.. code-block:: json
+
+    {
+      "ok": true,
+      "rows": [
+        {
+          "id": 3,
+          "name": "Detroit"
+        },
+        {
+          "id": 2,
+          "name": "Los Angeles"
+        },
+        {
+          "id": 4,
+          "name": "Memnonia"
+        },
+        {
+          "id": 1,
+          "name": "San Francisco"
+        }
+      ],
+      "truncated": false
+    }
+
+Tables will include an additional ``"next"`` key for pagination, which can be passed to ``?_next=`` to fetch the next page of results.
+
+The various ``?_shape=`` options continue to work as before - see :ref:`json_api_shapes` for details.
+
+A new ``?_extra=`` mechanism is available for tables, but has not yet been stabilized or documented. Details on that are available in :issue:`262`.
+
+Smaller changes
+~~~~~~~~~~~~~~~
+
+- Datasette documentation now shows YAML examples for :ref:`metadata` by default, with a tab interface for switching to JSON. (:issue:`1153`)
+- :ref:`plugin_register_output_renderer` plugins now have access to ``error`` and ``truncated`` arguments, allowing them to display error messages and take into account truncated results. (:issue:`2130`)
+- ``render_cell()`` plugin hook now also supports an optional ``request`` argument. (:issue:`2007`)
+- New ``Justfile`` to support development workflows for Datasette using `Just <https://github.com/casey/just>`__.
+- ``datasette.render_template()`` can now accepts a ``datasette.views.Context`` subclass as an alternative to a dictionary. (:issue:`2127`)
+- ``datasette install -e path`` option for editable installations, useful while developing plugins. (:issue:`2106`)
+- When started with the ``--cors`` option Datasette now serves an ``Access-Control-Max-Age: 3600`` header, ensuring CORS OPTIONS requests are repeated no more than once an hour. (:issue:`2079`)
+- Fixed a bug where the ``_internal`` database could display ``None`` instead of ``null`` for in-memory databases. (:issue:`1970`)
+
 .. _v0_64_2:
 
 0.64.2 (2023-03-08)
@@ -872,7 +924,10 @@ Prior to this release the Datasette ecosystem has treated authentication as excl
 
 You'll need to install plugins if you want full user accounts, but default Datasette can now authenticate a single root user with the new ``--root`` command-line option, which outputs a one-time use URL to :ref:`authenticate as a root actor <authentication_root>` (:issue:`784`)::
 
-    $ datasette fixtures.db --root
+    datasette fixtures.db --root
+
+::
+
     http://127.0.0.1:8001/-/auth-token?token=5b632f8cd44b868df625f5a6e2185d88eea5b22237fd3cc8773f107cc4fd6477
     INFO:     Started server process [14973]
     INFO:     Waiting for application startup.
@@ -1043,7 +1098,7 @@ You can now create :ref:`custom pages <custom_pages>` within your Datasette inst
 
 :ref:`config_dir` (:issue:`731`) allows you to define a custom Datasette instance as a directory. So instead of running the following::
 
-    $ datasette one.db two.db \
+    datasette one.db two.db \
       --metadata=metadata.json \
       --template-dir=templates/ \
       --plugins-dir=plugins \
@@ -1051,7 +1106,7 @@ You can now create :ref:`custom pages <custom_pages>` within your Datasette inst
 
 You can instead arrange your files in a single directory called ``my-project`` and run this::
 
-    $ datasette my-project/
+    datasette my-project/
 
 Also in this release:
 
@@ -1723,7 +1778,10 @@ In addition to the work on facets:
 
   Added new help section::
 
-      $ datasette --help-config
+      datasette --help-config
+
+  ::
+
       Config options:
         default_page_size            Default page size for the table view
                                      (default=100)

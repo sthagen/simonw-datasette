@@ -53,11 +53,18 @@ If you want to bundle some pre-written SQL queries with your Datasette-hosted da
 
 The quickest way to create views is with the SQLite command-line interface::
 
-    $ sqlite3 sf-trees.db
+    sqlite3 sf-trees.db
+
+::
+
     SQLite version 3.19.3 2017-06-27 16:48:08
     Enter ".help" for usage hints.
     sqlite> CREATE VIEW demo_view AS select qSpecies from Street_Tree_List;
     <CTRL+D>
+
+You can also use the `sqlite-utils <https://sqlite-utils.datasette.io/>`__ tool to `create a view <https://sqlite-utils.datasette.io/en/stable/cli.html#creating-views>`__::
+
+    sqlite-utils create-view sf-trees.db demo_view "select qSpecies from Street_Tree_List"
 
 .. _canned_queries:
 
@@ -392,6 +399,7 @@ This configuration will create a page at ``/mydatabase/add_name`` displaying a f
 You can customize how Datasette represents success and errors using the following optional properties:
 
 - ``on_success_message`` - the message shown when a query is successful
+- ``on_success_message_sql`` - alternative to ``on_success_message``: a SQL query that should be executed to generate the message
 - ``on_success_redirect`` - the path or URL the user is redirected to on success
 - ``on_error_message`` - the message shown when a query throws an error
 - ``on_error_redirect`` - the path or URL the user is redirected to on error
@@ -405,11 +413,12 @@ For example:
                 "queries": {
                     "add_name": {
                         "sql": "INSERT INTO names (name) VALUES (:name)",
+                        "params": ["name"],
                         "write": True,
-                        "on_success_message": "Name inserted",
+                        "on_success_message_sql": "select 'Name inserted: ' || :name",
                         "on_success_redirect": "/mydatabase/names",
                         "on_error_message": "Name insert failed",
-                        "on_error_redirect": "/mydatabase"
+                        "on_error_redirect": "/mydatabase",
                     }
                 }
             }
@@ -426,8 +435,10 @@ For example:
             queries:
               add_name:
                 sql: INSERT INTO names (name) VALUES (:name)
+                params:
+                - name
                 write: true
-                on_success_message: Name inserted
+                on_success_message_sql: 'select ''Name inserted: '' || :name'
                 on_success_redirect: /mydatabase/names
                 on_error_message: Name insert failed
                 on_error_redirect: /mydatabase
@@ -443,8 +454,11 @@ For example:
               "queries": {
                 "add_name": {
                   "sql": "INSERT INTO names (name) VALUES (:name)",
+                  "params": [
+                    "name"
+                  ],
                   "write": true,
-                  "on_success_message": "Name inserted",
+                  "on_success_message_sql": "select 'Name inserted: ' || :name",
                   "on_success_redirect": "/mydatabase/names",
                   "on_error_message": "Name insert failed",
                   "on_error_redirect": "/mydatabase"
@@ -455,9 +469,11 @@ For example:
         }
 .. [[[end]]]
 
-You can use ``"params"`` to explicitly list the named parameters that should be displayed as form fields - otherwise they will be automatically detected.
+You can use ``"params"`` to explicitly list the named parameters that should be displayed as form fields - otherwise they will be automatically detected. ``"params"`` is not necessary in the above example, since without it ``"name"`` would be automatically detected from the query.
 
 You can pre-populate form fields when the page first loads using a query string, e.g. ``/mydatabase/add_name?name=Prepopulated``. The user will have to submit the form to execute the query.
+
+If you specify a query in ``"on_success_message_sql"``, that query will be executed after the main query. The first column of the first row return by that query will be displayed as a success message. Named parameters from the main query will be made available to the success message query as well.
 
 .. _canned_queries_magic_parameters:
 
@@ -589,7 +605,7 @@ The JSON response will look like this:
         "redirect": "/data/add_name"
     }
 
-The ``"message"`` and ``"redirect"`` values here will take into account ``on_success_message``, ``on_success_redirect``, ``on_error_message`` and ``on_error_redirect``, if they have been set.
+The ``"message"`` and ``"redirect"`` values here will take into account ``on_success_message``, ``on_success_message_sql``,  ``on_success_redirect``, ``on_error_message`` and ``on_error_redirect``, if they have been set.
 
 .. _pagination:
 
