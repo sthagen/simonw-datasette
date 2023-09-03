@@ -4,6 +4,33 @@
 Changelog
 =========
 
+.. _v1_0_a5:
+
+1.0a5 (2023-08-29)
+------------------
+
+- When restrictions are applied to :ref:`API tokens <CreateTokenView>`, those restrictions now behave slightly differently: applying the ``view-table`` restriction will imply the ability to ``view-database`` for the database containing that table, and both ``view-table`` and ``view-database`` will imply ``view-instance``. Previously you needed to create a token with restrictions that explicitly listed ``view-instance`` and ``view-database`` and ``view-table`` in order to view a table without getting a permission denied error. (:issue:`2102`)
+- New ``datasette.yaml`` (or ``.json``) configuration file, which can be specified using ``datasette -c path-to-file``. The goal here to consolidate settings, plugin configuration, permissions, canned queries, and other Datasette configuration into a single single file, separate from ``metadata.yaml``. The legacy ``settings.json`` config file used for :ref:`config_dir` has been removed, and ``datasette.yaml`` has a ``"settings"`` section where the same settings key/value pairs can be included. In the next future alpha release, more configuration such as plugins/permissions/canned queries will be moved to the ``datasette.yaml`` file. See :issue:`2093` for more details. Thanks, Alex Garcia.
+- The ``-s/--setting`` option can now take dotted paths to nested settings. These will then be used to set or over-ride the same options as are present in the new configuration file. (:issue:`2156`)
+- New ``--actor '{"id": "json-goes-here"}'`` option for use with ``datasette --get`` to treat the simulated request as being made by a specific actor, see :ref:`cli_datasette_get`. (:issue:`2153`)
+- The Datasette ``_internal`` database has had some changes. It no longer shows up in the ``datasette.databases`` list by default, and is now instead available to plugins using the ``datasette.get_internal_database()``. Plugins are invited to use this as a private database to store configuration and settings and secrets that should not be made visible through the default Datasette interface. Users can pass the new  ``--internal internal.db`` option to persist that internal database to disk. Thanks, Alex Garcia. (:issue:`2157`).
+
+.. _v1_0_a4:
+
+1.0a4 (2023-08-21)
+------------------
+
+This alpha fixes a security issue with the ``/-/api`` API explorer. On authenticated Datasette instances (instances protected using plugins such as `datasette-auth-passwords <https://datasette.io/plugins/datasette-auth-passwords>`__) the API explorer interface could reveal the names of databases and tables within the protected instance. The data stored in those tables was not revealed.
+
+For more information and workarounds, read `the security advisory <https://github.com/simonw/datasette/security/advisories/GHSA-7ch3-7pp7-7cpq>`__. The issue has been present in every previous alpha version of Datasette 1.0: versions 1.0a0, 1.0a1, 1.0a2 and 1.0a3.
+
+Also in this alpha:
+
+- The new ``datasette plugins --requirements`` option outputs a list of currently installed plugins in Python ``requirements.txt`` format, useful for duplicating that installation elsewhere. (:issue:`2133`)
+- :ref:`canned_queries_writable` can now define a ``on_success_message_sql`` field in their configuration, containing a SQL query that should be executed upon successful completion of the write operation in order to generate a message to be shown to the user. (:issue:`2138`)
+- The automatically generated border color for a database is now shown in more places around the application. (:issue:`2119`)
+- Every instance of example shell script code in the documentation should now include a working copy button, free from additional syntax. (:issue:`2140`)
+
 .. _v1_0_a3:
 
 1.0a3 (2023-08-09)

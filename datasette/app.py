@@ -242,6 +242,7 @@ class Datasette:
         cache_headers=True,
         cors=False,
         inspect_data=None,
+        config=None,
         metadata=None,
         sqlite_extensions=None,
         template_dir=None,
@@ -255,6 +256,7 @@ class Datasette:
         pdb=False,
         crossdb=False,
         nolock=False,
+        internal=None,
     ):
         self._startup_invoked = False
         assert config_dir is None or isinstance(
@@ -303,19 +305,21 @@ class Datasette:
             self.add_database(
                 Database(self, is_mutable=False, is_memory=True), name="_memory"
             )
-        # memory_name is a random string so that each Datasette instance gets its own
-        # unique in-memory named database - otherwise unit tests can fail with weird
-        # errors when different instances accidentally share an in-memory database
-        self.add_database(
-            Database(self, memory_name=secrets.token_hex()), name="_internal"
-        )
-        self.internal_db_created = False
         for file in self.files:
             self.add_database(
                 Database(self, file, is_mutable=file not in self.immutables)
             )
+
+        self.internal_db_created = False
+        if internal is None:
+            self._internal_database = Database(self, memory_name=secrets.token_hex())
+        else:
+            self._internal_database = Database(self, path=internal, mode="rwc")
+        self._internal_database.name = "__INTERNAL__"
+
         self.cache_headers = cache_headers
         self.cors = cors
+        config_files = []
         metadata_files = []
         if config_dir:
             metadata_files = [
@@ -323,9 +327,19 @@ class Datasette:
                 for filename in ("metadata.json", "metadata.yaml", "metadata.yml")
                 if (config_dir / filename).exists()
             ]
+            config_files = [
+                config_dir / filename
+                for filename in ("datasette.json", "datasette.yaml", "datasette.yml")
+                if (config_dir / filename).exists()
+            ]
         if config_dir and metadata_files and not metadata:
             with metadata_files[0].open() as fp:
                 metadata = parse_metadata(fp.read())
+
+        if config_dir and config_files and not config:
+            with config_files[0].open() as fp:
+                config = parse_metadata(fp.read())
+
         self._metadata_local = metadata or {}
         self.sqlite_extensions = []
         for extension in sqlite_extensions or []:
@@ -344,17 +358,19 @@ class Datasette:
         if config_dir and (config_dir / "static").is_dir() and not static_mounts:
             static_mounts = [("static", str((config_dir / "static").resolve()))]
         self.static_mounts = static_mounts or []
-        if config_dir and (config_dir / "config.json").exists():
-            raise StartupError("config.json should be renamed to settings.json")
-        if config_dir and (config_dir / "settings.json").exists() and not settings:
-            settings = json.loads((config_dir / "settings.json").read_text())
-            # Validate those settings
-            for key in settings:
-                if key not in DEFAULT_SETTINGS:
-                    raise StartupError(
-                        "Invalid setting '{}' in settings.json".format(key)
-                    )
-        self._settings = dict(DEFAULT_SETTINGS, **(settings or {}))
+        if config_dir and (config_dir / "datasette.json").exists() and not config:
+            config = json.loads((config_dir / "datasette.json").read_text())
+
+        config = config or {}
+        config_settings = config.get("settings") or {}
+
+        # validate "settings" keys in datasette.json
+        for key in config_settings:
+            if key not in DEFAULT_SETTINGS:
+                raise StartupError("Invalid setting '{}' in datasette.json".format(key))
+
+        # CLI settings should overwrite datasette.json settings
+        self._settings = dict(DEFAULT_SETTINGS, **(config_settings), **(settings or {}))
         self.renderers = {}  # File extension -> (renderer, can_render) functions
         self.version_note = version_note
         if self.setting("num_sql_threads") == 0:
@@ -415,6 +431,20 @@ class Datasette:
         self._root_token = secrets.token_hex(32)
         self.client = DatasetteClient(self)
 
+    def get_permission(self, name_or_abbr: str) -> "Permission":
+        """
+        Returns a Permission object for the given name or abbreviation. Raises KeyError if not found.
+        """
+        if name_or_abbr in self.permissions:
+            return self.permissions[name_or_abbr]
+        # Try abbreviation
+        for permission in self.permissions.values():
+            if permission.abbr == name_or_abbr:
+                return permission
+        raise KeyError(
+            "No permission found with name or abbreviation {}".format(name_or_abbr)
+        )
+
     async def refresh_schemas(self):
         if self._refresh_schemas_lock.locked():
             return
@@ -422,15 +452,14 @@ class Datasette:
             await self._refresh_schemas()
 
     async def _refresh_schemas(self):
-        internal_db = self.databases["_internal"]
+        internal_db = self.get_internal_database()
         if not self.internal_db_created:
             await init_internal_db(internal_db)
             self.internal_db_created = True
-
         current_schema_versions = {
             row["database_name"]: row["schema_version"]
             for row in await internal_db.execute(
-                "select database_name, schema_version from databases"
+                "select database_name, schema_version from catalog_databases"
             )
         }
         for database_name, db in self.databases.items():
@@ -445,7 +474,7 @@ class Datasette:
                 values = [database_name, db.is_memory, schema_version]
             await internal_db.execute_write(
                 """
-                INSERT OR REPLACE INTO databases (database_name, path, is_memory, schema_version)
+                INSERT OR REPLACE INTO catalog_databases (database_name, path, is_memory, schema_version)
                 VALUES {}
             """.format(
                     placeholders
@@ -540,8 +569,7 @@ class Datasette:
                 raise KeyError
             return matches[0]
         if name is None:
-            # Return first database that isn't "_internal"
-            name = [key for key in self.databases.keys() if key != "_internal"][0]
+            name = [key for key in self.databases.keys()][0]
         return self.databases[name]
 
     def add_database(self, db, name=None, route=None):
@@ -640,6 +668,9 @@ class Datasette:
     @property
     def _metadata(self):
         return self.metadata()
+
+    def get_internal_database(self):
+        return self._internal_database
 
     def plugin_config(self, plugin_name, database=None, table=None, fallback=True):
         """Return config for plugin, falling back from specified database/table"""
@@ -964,7 +995,6 @@ class Datasette:
                 "hash": d.hash,
             }
             for name, d in self.databases.items()
-            if name != "_internal"
         ]
 
     def _versions(self):
