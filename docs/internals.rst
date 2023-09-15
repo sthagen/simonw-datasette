@@ -296,7 +296,7 @@ The dictionary keys are the permission names - e.g. ``view-instance`` - and the 
 ``table`` - None or string
     The table the user is interacting with.
 
-This method lets you read plugin configuration values that were set in ``metadata.json``. See :ref:`writing_plugins_configuration` for full details of how this method should be used.
+This method lets you read plugin configuration values that were set in  ``datasette.yaml``. See :ref:`writing_plugins_configuration` for full details of how this method should be used.
 
 The return value will be the value from the configuration file - usually a dictionary.
 
@@ -321,6 +321,27 @@ await .render_template(template, context=None, request=None)
     If you pass a Datasette request object here it will be made available to the template.
 
 Renders a `Jinja template <https://jinja.palletsprojects.com/en/2.11.x/>`__ using Datasette's preconfigured instance of Jinja and returns the resulting string. The template will have access to Datasette's default template functions and any functions that have been made available by other plugins.
+
+.. _datasette_actors_from_ids:
+
+await .actors_from_ids(actor_ids)
+---------------------------------
+
+``actor_ids`` - list of strings or integers
+    A list of actor IDs to look up.
+
+Returns a dictionary, where the keys are the IDs passed to it and the values are the corresponding actor dictionaries.
+
+This method is mainly designed to be used with plugins. See the :ref:`plugin_hook_actors_from_ids` documentation for details.
+
+If no plugins that implement that hook are installed, the default return value looks like this:
+
+.. code-block:: json
+
+    {
+        "1": {"id": "1"},
+        "2": {"id": "2"}
+    }
 
 .. _datasette_permission_allowed:
 

@@ -44,7 +44,7 @@ setup(
     install_requires=[
         "asgiref>=3.2.10",
         "click>=7.1.1",
-        "click-default-group-wheel>=1.2.2",
+        "click-default-group>=1.2.3",
         "Jinja2>=2.10.3",
         "hupper>=1.9",
         "httpx>=0.20",
@@ -69,7 +69,7 @@ setup(
     setup_requires=["pytest-runner"],
     extras_require={
         "docs": [
-            "Sphinx==7.2.4",
+            "Sphinx==7.2.5",
             "furo==2023.8.19",
             "sphinx-autobuild",
             "codespell>=2.2.5",

@@ -909,7 +909,7 @@ Potential use-cases:
 
 * Run some initialization code for the plugin
 * Create database tables that a plugin needs on startup
-* Validate the metadata configuration for a plugin on startup, and raise an error if it is invalid
+* Validate the configuration for a plugin on startup, and raise an error if it is invalid
 
 .. note::
 
@@ -1070,6 +1070,63 @@ Instead of returning a dictionary, this function can return an awaitable functio
         return inner
 
 Examples: `datasette-auth-tokens <https://datasette.io/plugins/datasette-auth-tokens>`_, `datasette-auth-passwords <https://datasette.io/plugins/datasette-auth-passwords>`_
+
+.. _plugin_hook_actors_from_ids:
+
+actors_from_ids(datasette, actor_ids)
+-------------------------------------
+
+``datasette`` - :ref:`internals_datasette`
+    You can use this to access plugin configuration options via ``datasette.plugin_config(your_plugin_name)``, or to execute SQL queries.
+
+``actor_ids`` - list of strings or integers
+    The actor IDs to look up.
+
+The hook must return a dictionary that maps the incoming actor IDs to their full dictionary representation.
+
+Some plugins that implement social features may store the ID of the :ref:`actor <authentication_actor>` that performed an action - added a comment, bookmarked a table or similar - and then need a way to resolve those IDs into display-friendly actor dictionaries later on.
+
+Unlike other plugin hooks, this only uses the first implementation of the hook to return a result. You can expect users to only have a single plugin installed that implements this hook.
+
+If no plugin is installed, Datasette defaults to returning actors that are just ``{"id": actor_id}``.
+
+The hook can return a dictionary or an awaitable function that then returns a dictionary.
+
+This example implementation returns actors from a database table:
+
+.. code-block:: python
+
+    from datasette import hookimpl
+
+
+    @hookimpl
+    def actors_from_ids(datasette, actor_ids):
+        db = datasette.get_database("actors")
+
+        async def inner():
+            sql = "select id, name from actors where id in ({})".format(
+                ", ".join("?" for _ in actor_ids)
+            )
+            actors = {}
+            for row in (await db.execute(sql, actor_ids)).rows:
+                actor = dict(row)
+                actors[actor["id"]] = actor
+            return actors
+
+        return inner
+
+The returned dictionary from this example looks like this:
+
+.. code-block:: json
+
+    {
+        "1": {"id": "1", "name": "Tony"},
+        "2": {"id": "2", "name": "Tina"},
+    }
+
+These IDs could be integers or strings, depending on how the actors used by the Datasette instance are configured.
+
+Example: `datasette-remote-actors <https://github.com/datasette/datasette-remote-actors>`_
 
 .. _plugin_hook_filters_from_request:
 
@@ -1439,7 +1496,37 @@ database_actions(datasette, actor, database, request)
 
 This hook is similar to :ref:`plugin_hook_table_actions` but populates an actions menu on the database page.
 
-Example: `datasette-graphql <https://datasette.io/plugins/datasette-graphql>`_
+This example adds a new database action for creating a table, if the user has the ``edit-schema`` permission:
+
+.. code-block:: python
+
+    from datasette import hookimpl
+
+
+    @hookimpl
+    def database_actions(datasette, actor, database):
+        async def inner():
+            if not await datasette.permission_allowed(
+                actor,
+                "edit-schema",
+                resource=database,
+                default=False,
+            ):
+                return []
+            return [
+                {
+                    "href": datasette.urls.path(
+                        "/-/edit-schema/{}/-/create".format(
+                            database
+                        )
+                    ),
+                    "label": "Create a table",
+                }
+            ]
+
+        return inner
+
+Example: `datasette-graphql <https://datasette.io/plugins/datasette-graphql>`_, `datasette-edit-schema <https://datasette.io/plugins/datasette-edit-schema>`_
 
 .. _plugin_hook_skip_csrf:
 

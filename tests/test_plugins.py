@@ -234,9 +234,6 @@ async def test_plugin_config(ds_client):
 async def test_plugin_config_env(ds_client):
     os.environ["FOO_ENV"] = "FROM_ENVIRONMENT"
     assert {"foo": "FROM_ENVIRONMENT"} == ds_client.ds.plugin_config("env-plugin")
-    # Ensure secrets aren't visible in /-/metadata.json
-    metadata = await ds_client.get("/-/metadata.json")
-    assert {"foo": {"$env": "FOO_ENV"}} == metadata.json()["plugins"]["env-plugin"]
     del os.environ["FOO_ENV"]
 
 
@@ -246,11 +243,6 @@ async def test_plugin_config_env_from_list(ds_client):
     assert [{"in_a_list": "FROM_ENVIRONMENT"}] == ds_client.ds.plugin_config(
         "env-plugin-list"
     )
-    # Ensure secrets aren't visible in /-/metadata.json
-    metadata = await ds_client.get("/-/metadata.json")
-    assert [{"in_a_list": {"$env": "FOO_ENV"}}] == metadata.json()["plugins"][
-        "env-plugin-list"
-    ]
     del os.environ["FOO_ENV"]
 
 
@@ -259,11 +251,6 @@ async def test_plugin_config_file(ds_client):
     with open(TEMP_PLUGIN_SECRET_FILE, "w") as fp:
         fp.write("FROM_FILE")
     assert {"foo": "FROM_FILE"} == ds_client.ds.plugin_config("file-plugin")
-    # Ensure secrets aren't visible in /-/metadata.json
-    metadata = await ds_client.get("/-/metadata.json")
-    assert {"foo": {"$file": TEMP_PLUGIN_SECRET_FILE}} == metadata.json()["plugins"][
-        "file-plugin"
-    ]
     os.remove(TEMP_PLUGIN_SECRET_FILE)
 
 
@@ -722,7 +709,7 @@ async def test_hook_register_routes(ds_client, path, body):
 @pytest.mark.parametrize("configured_path", ("path1", "path2"))
 def test_hook_register_routes_with_datasette(configured_path):
     with make_app_client(
-        metadata={
+        config={
             "plugins": {
                 "register-route-demo": {
                     "path": configured_path,
@@ -741,7 +728,7 @@ def test_hook_register_routes_with_datasette(configured_path):
 def test_hook_register_routes_override():
     "Plugins can over-ride default paths such as /db/table"
     with make_app_client(
-        metadata={
+        config={
             "plugins": {
                 "register-route-demo": {
                     "path": "blah",
@@ -1099,7 +1086,7 @@ async def test_hook_filters_from_request(ds_client):
 @pytest.mark.parametrize("extra_metadata", (False, True))
 async def test_hook_register_permissions(extra_metadata):
     ds = Datasette(
-        metadata={
+        config={
             "plugins": {
                 "datasette-register-permissions": {
                     "permissions": [
@@ -1151,7 +1138,7 @@ async def test_hook_register_permissions_no_duplicates(duplicate):
     if duplicate == "abbr":
         abbr2 = "abbr1"
     ds = Datasette(
-        metadata={
+        config={
             "plugins": {
                 "datasette-register-permissions": {
                     "permissions": [
@@ -1186,7 +1173,7 @@ async def test_hook_register_permissions_no_duplicates(duplicate):
 @pytest.mark.asyncio
 async def test_hook_register_permissions_allows_identical_duplicates():
     ds = Datasette(
-        metadata={
+        config={
             "plugins": {
                 "datasette-register-permissions": {
                     "permissions": [
@@ -1215,3 +1202,65 @@ async def test_hook_register_permissions_allows_identical_duplicates():
     await ds.invoke_startup()
     # Check that ds.permissions has only one of each
     assert len([p for p in ds.permissions.values() if p.abbr == "abbr1"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_hook_actors_from_ids():
+    # Without the hook should return default {"id": id} list
+    ds = Datasette()
+    await ds.invoke_startup()
+    db = ds.add_memory_database("actors_from_ids")
+    await db.execute_write(
+        "create table actors (id text primary key, name text, age int)"
+    )
+    await db.execute_write(
+        "insert into actors (id, name, age) values ('3', 'Cate Blanchett', 52)"
+    )
+    await db.execute_write(
+        "insert into actors (id, name, age) values ('5', 'Rooney Mara', 36)"
+    )
+    await db.execute_write(
+        "insert into actors (id, name, age) values ('7', 'Sarah Paulson', 46)"
+    )
+    await db.execute_write(
+        "insert into actors (id, name, age) values ('9', 'Helena Bonham Carter', 55)"
+    )
+    table_names = await db.table_names()
+    assert table_names == ["actors"]
+    actors1 = await ds.actors_from_ids(["3", "5", "7"])
+    assert actors1 == {
+        "3": {"id": "3"},
+        "5": {"id": "5"},
+        "7": {"id": "7"},
+    }
+
+    class ActorsFromIdsPlugin:
+        __name__ = "ActorsFromIdsPlugin"
+
+        @hookimpl
+        def actors_from_ids(self, datasette, actor_ids):
+            db = datasette.get_database("actors_from_ids")
+
+            async def inner():
+                sql = "select id, name from actors where id in ({})".format(
+                    ", ".join("?" for _ in actor_ids)
+                )
+                actors = {}
+                result = await db.execute(sql, actor_ids)
+                for row in result.rows:
+                    actor = dict(row)
+                    actors[actor["id"]] = actor
+                return actors
+
+            return inner
+
+    try:
+        pm.register(ActorsFromIdsPlugin(), name="ActorsFromIdsPlugin")
+        actors2 = await ds.actors_from_ids(["3", "5", "7"])
+        assert actors2 == {
+            "3": {"id": "3", "name": "Cate Blanchett"},
+            "5": {"id": "5", "name": "Rooney Mara"},
+            "7": {"id": "7", "name": "Sarah Paulson"},
+        }
+    finally:
+        pm.unregister(name="ReturnNothingPlugin")
