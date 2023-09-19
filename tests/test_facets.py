@@ -643,3 +643,23 @@ async def test_conflicting_facet_names_json(ds_client):
         "created_2",
         "tags_2",
     }
+
+
+@pytest.mark.asyncio
+async def test_facet_against_in_memory_database():
+    ds = Datasette()
+    db = ds.add_memory_database("mem")
+    await db.execute_write(
+        "create table t (id integer primary key, name text, name2 text)"
+    )
+    to_insert = [{"name": "one", "name2": "1"} for _ in range(800)] + [
+        {"name": "two", "name2": "2"} for _ in range(300)
+    ]
+    print(to_insert)
+    await db.execute_write_many(
+        "insert into t (name, name2) values (:name, :name2)", to_insert
+    )
+    response1 = await ds.client.get("/mem/t")
+    assert response1.status_code == 200
+    response2 = await ds.client.get("/mem/t?_facet=name&_facet=name2")
+    assert response2.status_code == 200
