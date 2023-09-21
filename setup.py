@@ -48,6 +48,8 @@ setup(
         "Jinja2>=2.10.3",
         "hupper>=1.9",
         "httpx>=0.20",
+        'importlib_resources>=1.3.1; python_version < "3.9"',
+        'importlib_metadata>=4.6; python_version < "3.10"',
         "pint>=0.9",
         "pluggy>=1.0",
         "uvicorn>=0.11",
@@ -69,8 +71,8 @@ setup(
     setup_requires=["pytest-runner"],
     extras_require={
         "docs": [
-            "Sphinx==7.2.5",
-            "furo==2023.8.19",
+            "Sphinx==7.2.6",
+            "furo==2023.9.10",
             "sphinx-autobuild",
             "codespell>=2.2.5",
             "blacken-docs",
@@ -83,7 +85,7 @@ setup(
             "pytest-xdist>=2.2.1",
             "pytest-asyncio>=0.17",
             "beautifulsoup4>=4.8.1",
-            "black==23.7.0",
+            "black==23.9.1",
             "blacken-docs==1.16.0",
             "pytest-timeout>=1.4.2",
             "trustme>=0.7",

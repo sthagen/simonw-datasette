@@ -1,9 +1,18 @@
 import importlib
 import os
 import pluggy
-import pkg_resources
 import sys
 from . import hookspecs
+
+if sys.version_info >= (3, 9):
+    import importlib.resources as importlib_resources
+else:
+    import importlib_resources
+if sys.version_info >= (3, 10):
+    import importlib.metadata as importlib_metadata
+else:
+    import importlib_metadata
+
 
 DEFAULT_PLUGINS = (
     "datasette.publish.heroku",
@@ -35,15 +44,15 @@ if DATASETTE_LOAD_PLUGINS is not None:
         name for name in DATASETTE_LOAD_PLUGINS.split(",") if name.strip()
     ]:
         try:
-            distribution = pkg_resources.get_distribution(package_name)
-            entry_map = distribution.get_entry_map()
-            if "datasette" in entry_map:
-                for plugin_name, entry_point in entry_map["datasette"].items():
+            distribution = importlib_metadata.distribution(package_name)
+            entry_points = distribution.entry_points
+            for entry_point in entry_points:
+                if entry_point.group == "datasette":
                     mod = entry_point.load()
                     pm.register(mod, name=entry_point.name)
                     # Ensure name can be found in plugin_to_distinfo later:
                     pm._plugin_distinfo.append((mod, distribution))
-        except pkg_resources.DistributionNotFound:
+        except importlib_metadata.PackageNotFoundError:
             sys.stderr.write("Plugin {} could not be found\n".format(package_name))
 
 
@@ -61,16 +70,16 @@ def get_plugins():
         templates_path = None
         if plugin.__name__ not in DEFAULT_PLUGINS:
             try:
-                if pkg_resources.resource_isdir(plugin.__name__, "static"):
-                    static_path = pkg_resources.resource_filename(
-                        plugin.__name__, "static"
+                if (importlib_resources.files(plugin.__name__) / "static").is_dir():
+                    static_path = str(
+                        importlib_resources.files(plugin.__name__) / "static"
                     )
-                if pkg_resources.resource_isdir(plugin.__name__, "templates"):
-                    templates_path = pkg_resources.resource_filename(
-                        plugin.__name__, "templates"
+                if (importlib_resources.files(plugin.__name__) / "templates").is_dir():
+                    templates_path = str(
+                        importlib_resources.files(plugin.__name__) / "templates"
                     )
-            except (KeyError, ImportError):
-                # Caused by --plugins_dir= plugins - KeyError/ImportError thrown in Py3.5
+            except (TypeError, ModuleNotFoundError):
+                # Caused by --plugins_dir= plugins
                 pass
         plugin_info = {
             "name": plugin.__name__,
@@ -81,6 +90,6 @@ def get_plugins():
         distinfo = plugin_to_distinfo.get(plugin)
         if distinfo:
             plugin_info["version"] = distinfo.version
-            plugin_info["name"] = distinfo.project_name
+            plugin_info["name"] = distinfo.name or distinfo.project_name
         plugins.append(plugin_info)
     return plugins
