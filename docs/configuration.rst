@@ -275,26 +275,19 @@ For database level or table level plugin configuration, nest it under the approp
 
 
 .. _configuration_reference_permissions:
-Permissions Configuration
-~~~~~~~~~~~~~~~~~~~~
-
-TODO
-
-
-.. _configuration_reference_authentication:
-Authentication Configuration
-~~~~~~~~~~~~~~~~~~~~
+Permissions configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 TODO
 
 .. _configuration_reference_canned_queries:
-Canned Queries Configuration
-~~~~~~~~~~~~~~~~~~~~
+Canned queries configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 TODO
 
 .. _configuration_reference_css_js:
-Extra CSS and JS Configuration
-~~~~~~~~~~~~~~~~~~~~
+Extra CSS and JS configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 TODO
