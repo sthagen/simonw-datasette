@@ -484,7 +484,6 @@ async def stream_csv(datasette, fetch_data, request, database):
 
     async def stream_fn(r):
         nonlocal data, trace
-        print("max_csv_mb", datasette.setting("max_csv_mb"))
         limited_writer = LimitedWriter(r, datasette.setting("max_csv_mb"))
         if trace:
             await limited_writer.write(preamble)
@@ -554,16 +553,18 @@ async def stream_csv(datasette, fetch_data, request, database):
                                 if cell is None:
                                     new_row.extend(("", ""))
                                 else:
-                                    assert isinstance(cell, dict)
-                                    new_row.append(cell["value"])
-                                    new_row.append(cell["label"])
+                                    if not isinstance(cell, dict):
+                                        new_row.extend((cell, ""))
+                                    else:
+                                        new_row.append(cell["value"])
+                                        new_row.append(cell["label"])
                             else:
                                 new_row.append(cell)
                         await writer.writerow(new_row)
-            except Exception as e:
-                sys.stderr.write("Caught this error: {}\n".format(e))
+            except Exception as ex:
+                sys.stderr.write("Caught this error: {}\n".format(ex))
                 sys.stderr.flush()
-                await r.write(str(e))
+                await r.write(str(ex))
                 return
         await limited_writer.write(postamble)
 
