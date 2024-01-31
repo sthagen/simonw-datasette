@@ -68,7 +68,6 @@ setup(
         [console_scripts]
         datasette=datasette.cli:cli
     """,
-    setup_requires=["pytest-runner"],
     extras_require={
         "docs": [
             "Sphinx==7.2.6",
@@ -85,7 +84,7 @@ setup(
             "pytest-xdist>=2.2.1",
             "pytest-asyncio>=0.17",
             "beautifulsoup4>=4.8.1",
-            "black==23.9.1",
+            "black==24.1.1",
             "blacken-docs==1.16.0",
             "pytest-timeout>=1.4.2",
             "trustme>=0.7",
@@ -93,7 +92,6 @@ setup(
         ],
         "rich": ["rich"],
     },
-    tests_require=["datasette[test]"],
     classifiers=[
         "Development Status :: 4 - Beta",
         "Framework :: Datasette",

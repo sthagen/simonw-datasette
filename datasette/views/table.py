@@ -17,6 +17,7 @@ from datasette.utils import (
     append_querystring,
     compound_keys_after_sql,
     format_bytes,
+    make_slot_function,
     tilde_encode,
     escape_sqlite,
     filters_should_redirect,
@@ -235,9 +236,11 @@ async def display_columns_and_rows(
                             path_from_row_pks(row, pks, not pks),
                             column,
                         ),
-                        ' title="{}"'.format(formatted)
-                        if "bytes" not in formatted
-                        else "",
+                        (
+                            ' title="{}"'.format(formatted)
+                            if "bytes" not in formatted
+                            else ""
+                        ),
                         len(value),
                         "" if len(value) == 1 else "s",
                     )
@@ -288,9 +291,9 @@ async def display_columns_and_rows(
                     "column": column,
                     "value": display_value,
                     "raw": value,
-                    "value_type": "none"
-                    if value is None
-                    else str(type(value).__name__),
+                    "value_type": (
+                        "none" if value is None else str(type(value).__name__)
+                    ),
                 }
             )
         cell_rows.append(Row(cells))
@@ -842,6 +845,13 @@ async def table_view_traced(datasette, request):
                         f"{'*' if template_name == template.name else ''}{template_name}"
                         for template_name in templates
                     ],
+                    top_table=make_slot_function(
+                        "top_table",
+                        datasette,
+                        request,
+                        database=resolved.db.name,
+                        table=resolved.table,
+                    ),
                 ),
                 request=request,
                 view_name="table",
@@ -966,9 +976,9 @@ async def table_view_data(
 
     from_sql = "from {table_name} {where}".format(
         table_name=escape_sqlite(table_name),
-        where=("where {} ".format(" and ".join(where_clauses)))
-        if where_clauses
-        else "",
+        where=(
+            ("where {} ".format(" and ".join(where_clauses))) if where_clauses else ""
+        ),
     )
     # Copy of params so we can mutate them later:
     from_sql_params = dict(**params)
@@ -1032,10 +1042,12 @@ async def table_view_data(
                             column=escape_sqlite(sort or sort_desc),
                             op=">" if sort else "<",
                             p=len(params),
-                            extra_desc_only=""
-                            if sort
-                            else " or {column2} is null".format(
-                                column2=escape_sqlite(sort or sort_desc)
+                            extra_desc_only=(
+                                ""
+                                if sort
+                                else " or {column2} is null".format(
+                                    column2=escape_sqlite(sort or sort_desc)
+                                )
                             ),
                             next_clauses=" and ".join(next_by_pk_clauses),
                         )

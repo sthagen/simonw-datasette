@@ -402,9 +402,9 @@ def make_dockerfile(
     apt_get_extras = apt_get_extras_
     if spatialite:
         apt_get_extras.extend(["python3-dev", "gcc", "libsqlite3-mod-spatialite"])
-        environment_variables[
-            "SQLITE_EXTENSIONS"
-        ] = "/usr/lib/x86_64-linux-gnu/mod_spatialite.so"
+        environment_variables["SQLITE_EXTENSIONS"] = (
+            "/usr/lib/x86_64-linux-gnu/mod_spatialite.so"
+        )
     return """
 FROM python:3.11.0-slim-bullseye
 COPY . /app
@@ -416,9 +416,11 @@ RUN datasette inspect {files} --inspect-file inspect-data.json
 ENV PORT {port}
 EXPOSE {port}
 CMD {cmd}""".format(
-        apt_get_extras=APT_GET_DOCKERFILE_EXTRAS.format(" ".join(apt_get_extras))
-        if apt_get_extras
-        else "",
+        apt_get_extras=(
+            APT_GET_DOCKERFILE_EXTRAS.format(" ".join(apt_get_extras))
+            if apt_get_extras
+            else ""
+        ),
         environment_variables="\n".join(
             [
                 "ENV {} '{}'".format(key, value)
@@ -1283,3 +1285,20 @@ def fail_if_plugins_in_metadata(metadata: dict, filename=None):
             f'Datasette no longer accepts plugin configuration in --metadata. Move your "plugins" configuration blocks to a separate file - we suggest calling that datasette.{suggested_extension} - and start Datasette with datasette -c datasette.{suggested_extension}. See https://docs.datasette.io/en/latest/configuration.html for more details.'
         )
     return metadata
+
+
+def make_slot_function(name, datasette, request, **kwargs):
+    from datasette.plugins import pm
+
+    method = getattr(pm.hook, name, None)
+    assert method is not None, "No hook found for {}".format(name)
+
+    async def inner():
+        html_bits = []
+        for hook in method(datasette=datasette, request=request, **kwargs):
+            html = await await_me_maybe(hook)
+            if html is not None:
+                html_bits.append(html)
+        return markupsafe.Markup("".join(html_bits))
+
+    return inner
