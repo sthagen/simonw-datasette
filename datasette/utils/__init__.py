@@ -1272,21 +1272,6 @@ def pairs_to_nested_config(pairs: typing.List[typing.Tuple[str, typing.Any]]) ->
     return result
 
 
-def fail_if_plugins_in_metadata(metadata: dict, filename=None):
-    """If plugin config is inside metadata, raise an Exception"""
-    if metadata is not None and metadata.get("plugins") is not None:
-        suggested_extension = (
-            ".yaml"
-            if filename is not None
-            and (filename.endswith(".yaml") or filename.endswith(".yml"))
-            else ".json"
-        )
-        raise Exception(
-            f'Datasette no longer accepts plugin configuration in --metadata. Move your "plugins" configuration blocks to a separate file - we suggest calling that datasette.{suggested_extension} - and start Datasette with datasette -c datasette.{suggested_extension}. See https://docs.datasette.io/en/latest/configuration.html for more details.'
-        )
-    return metadata
-
-
 def make_slot_function(name, datasette, request, **kwargs):
     from datasette.plugins import pm
 
@@ -1302,3 +1287,43 @@ def make_slot_function(name, datasette, request, **kwargs):
         return markupsafe.Markup("".join(html_bits))
 
     return inner
+
+
+def move_plugins(source, destination):
+    """
+    Move 'plugins' keys from source to destination dictionary. Creates hierarchy in destination if needed.
+    After moving, recursively remove any keys in the source that are left empty.
+    """
+
+    def recursive_move(src, dest, path=None):
+        if path is None:
+            path = []
+        for key, value in list(src.items()):
+            new_path = path + [key]
+            if key == "plugins":
+                # Navigate and create the hierarchy in destination if needed
+                d = dest
+                for step in path:
+                    d = d.setdefault(step, {})
+                # Move the plugins
+                d[key] = value
+                # Remove the plugins from source
+                src.pop(key, None)
+            elif isinstance(value, dict):
+                recursive_move(value, dest, new_path)
+                # After moving, check if the current dictionary is empty and remove it if so
+                if not value:
+                    src.pop(key, None)
+
+    def prune_empty_dicts(d):
+        """
+        Recursively prune all empty dictionaries from a given dictionary.
+        """
+        for key, value in list(d.items()):
+            if isinstance(value, dict):
+                prune_empty_dicts(value)
+                if value == {}:
+                    d.pop(key, None)
+
+    recursive_move(source, destination)
+    prune_empty_dicts(source)

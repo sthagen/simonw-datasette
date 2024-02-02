@@ -883,14 +883,6 @@ def test_hook_forbidden(restore_working_directory):
         )
 
 
-def test_plugin_config_in_metadata():
-    with pytest.raises(
-        Exception,
-        match="Datasette no longer accepts plugin configuration in --metadata",
-    ):
-        Datasette(memory=True, metadata={"plugins": {}})
-
-
 @pytest.mark.asyncio
 async def test_hook_handle_exception(ds_client):
     await ds_client.get("/trigger-error?x=123")
@@ -1466,3 +1458,54 @@ async def test_hook_register_events():
     datasette = Datasette(memory=True)
     await datasette.invoke_startup()
     assert any(k.__name__ == "OneEvent" for k in datasette.event_classes)
+
+
+@pytest.mark.parametrize(
+    "metadata,config,expected_metadata,expected_config",
+    (
+        (
+            # Instance level
+            {"plugins": {"datasette-foo": "bar"}},
+            {},
+            {},
+            {"plugins": {"datasette-foo": "bar"}},
+        ),
+        (
+            # Database level
+            {"databases": {"foo": {"plugins": {"datasette-foo": "bar"}}}},
+            {},
+            {},
+            {"databases": {"foo": {"plugins": {"datasette-foo": "bar"}}}},
+        ),
+        (
+            # Table level
+            {
+                "databases": {
+                    "foo": {"tables": {"bar": {"plugins": {"datasette-foo": "bar"}}}}
+                }
+            },
+            {},
+            {},
+            {
+                "databases": {
+                    "foo": {"tables": {"bar": {"plugins": {"datasette-foo": "bar"}}}}
+                }
+            },
+        ),
+        (
+            # Keep other keys
+            {"plugins": {"datasette-foo": "bar"}, "other": "key"},
+            {"original_config": "original"},
+            {"other": "key"},
+            {"original_config": "original", "plugins": {"datasette-foo": "bar"}},
+        ),
+    ),
+)
+def test_metadata_plugin_config_treated_as_config(
+    metadata, config, expected_metadata, expected_config
+):
+    ds = Datasette(metadata=metadata, config=config)
+    actual_metadata = ds.metadata()
+    assert "plugins" not in actual_metadata
+    assert actual_metadata == expected_metadata
+    assert ds.config == expected_config
