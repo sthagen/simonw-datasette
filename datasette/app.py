@@ -74,7 +74,8 @@ from .utils import (
     find_spatialite,
     format_bytes,
     module_from_path,
-    move_plugins,
+    move_plugins_and_allow,
+    move_table_config,
     parse_metadata,
     resolve_env_secrets,
     resolve_routes,
@@ -343,10 +344,12 @@ class Datasette:
             with config_files[0].open() as fp:
                 config = parse_metadata(fp.read())
 
-        # Move any "plugins" settings from metadata to config - updates them in place
+        # Move any "plugins" and "allow" settings from metadata to config - updates them in place
         metadata = metadata or {}
         config = config or {}
-        move_plugins(metadata, config)
+        metadata, config = move_plugins_and_allow(metadata, config)
+        # Now migrate any known table configuration settings over as well
+        metadata, config = move_table_config(metadata, config)
 
         self._metadata_local = metadata or {}
         self.sqlite_extensions = []
@@ -1202,10 +1205,11 @@ class Datasette:
     def _actor(self, request):
         return {"actor": request.actor}
 
-    def table_metadata(self, database, table):
-        """Fetch table-specific metadata."""
+    async def table_config(self, database: str, table: str) -> dict:
+        """Return dictionary of configuration for specified table"""
         return (
-            (self.metadata("databases") or {})
+            (self.config or {})
+            .get("databases", {})
             .get(database, {})
             .get("tables", {})
             .get(table, {})
