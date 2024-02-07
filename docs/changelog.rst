@@ -11,6 +11,8 @@ Changelog
 
 This alpha release continues the migration of Datasette's configuration from ``metadata.yaml`` to the new ``datasette.yaml`` configuration file, introduces a new system for JavaScript plugins and adds several new plugin hooks.
 
+See `Datasette 1.0a8: JavaScript plugins, new plugin hooks and plugin configuration in datasette.yaml <https://simonwillison.net/2024/Feb/7/datasette-1a8/>`__ for an annotated version of these release notes.
+
 Configuration
 ~~~~~~~~~~~~~
 
@@ -67,6 +69,7 @@ Plugin hooks
     - Plugins can register additional event classes using :ref:`plugin_hook_register_events`.
     - They can then trigger those events with the :ref:`datasette.track_event(event) <datasette_track_event>` internal method.
     - Plugins can subscribe to notifications of events using the :ref:`plugin_hook_track_event` plugin hook.
+    - Datasette core now emits ``login``, ``logout``, ``create-token``, ``create-table``, ``drop-table``, ``insert-rows``, ``upsert-rows``, ``update-row``, ``delete-row`` events, :ref:`documented here <events>`.
 - New internal function for plugin authors: :ref:`database_execute_isolated_fn`, for creating a new SQLite connection, executing code and then closing that connection, all while preventing other code from writing to that particular database. This connection will not have the :ref:`prepare_connection() <plugin_hook_prepare_connection>` plugin hook executed against it, allowing plugins to perform actions that might otherwise be blocked by existing connection configuration. (:issue:`2218`)
 
 Documentation
