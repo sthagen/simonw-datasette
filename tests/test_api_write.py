@@ -61,6 +61,27 @@ async def test_insert_row(ds_write):
 
 
 @pytest.mark.asyncio
+async def test_insert_row_alter(ds_write):
+    token = write_token(ds_write)
+    response = await ds_write.client.post(
+        "/data/docs/-/insert",
+        json={
+            "row": {"title": "Test", "score": 1.2, "age": 5, "extra": "extra"},
+            "alter": True,
+        },
+        headers=_headers(token),
+    )
+    assert response.status_code == 201
+    assert response.json()["ok"] is True
+    assert response.json()["rows"][0]["extra"] == "extra"
+    # Analytics event
+    event = last_event(ds_write)
+    assert event.name == "alter-table"
+    assert "extra" not in event.before_schema
+    assert "extra" in event.after_schema
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("return_rows", (True, False))
 async def test_insert_rows(ds_write, return_rows):
     token = write_token(ds_write)
@@ -278,16 +299,27 @@ async def test_insert_rows(ds_write, return_rows):
             403,
             ["Permission denied: need both insert-row and update-row"],
         ),
+        # Alter table forbidden without alter permission
+        (
+            "/data/docs/-/upsert",
+            {"rows": [{"id": 1, "title": "One", "extra": "extra"}], "alter": True},
+            "update-and-insert-but-no-alter",
+            403,
+            ["Permission denied for alter-table"],
+        ),
     ),
 )
 async def test_insert_or_upsert_row_errors(
     ds_write, path, input, special_case, expected_status, expected_errors
 ):
-    token = write_token(ds_write)
+    token_permissions = []
     if special_case == "insert-but-not-update":
-        token = write_token(ds_write, permissions=["ir", "vi"])
+        token_permissions = ["ir", "vi"]
     if special_case == "update-but-not-insert":
-        token = write_token(ds_write, permissions=["ur", "vi"])
+        token_permissions = ["ur", "vi"]
+    if special_case == "update-and-insert-but-no-alter":
+        token_permissions = ["ur", "ir"]
+    token = write_token(ds_write, permissions=token_permissions)
     if special_case == "duplicate_id":
         await ds_write.get_database("data").execute_write(
             "insert into docs (id) values (1)"
@@ -309,7 +341,9 @@ async def test_insert_or_upsert_row_errors(
     actor_response = (
         await ds_write.client.get("/-/actor.json", headers=kwargs["headers"])
     ).json()
-    print(actor_response)
+    assert set((actor_response["actor"] or {}).get("_r", {}).get("a") or []) == set(
+        token_permissions
+    )
 
     if special_case == "invalid_json":
         del kwargs["json"]
@@ -434,6 +468,12 @@ async def test_insert_ignore_replace(
                 {"id": 1, "title": "Two", "score": 1},
             ],
         ),
+        (
+            # Upsert with an alter
+            {"rows": [{"id": 1, "title": "One"}], "pk": "id"},
+            {"rows": [{"id": 1, "title": "Two", "extra": "extra"}], "alter": True},
+            [{"id": 1, "title": "Two", "extra": "extra"}],
+        ),
     ),
 )
 @pytest.mark.parametrize("should_return", (False, True))
@@ -459,10 +499,14 @@ async def test_upsert(ds_write, initial, input, expected_rows, should_return):
 
     # Analytics event
     event = last_event(ds_write)
-    assert event.name == "upsert-rows"
-    assert event.num_rows == 1
     assert event.database == "data"
     assert event.table == "upsert_test"
+    if input.get("alter"):
+        assert event.name == "alter-table"
+        assert "extra" in event.after_schema
+    else:
+        assert event.name == "upsert-rows"
+        assert event.num_rows == 1
 
     if should_return:
         # We only expect it to return rows corresponding to those we sent
@@ -582,24 +626,33 @@ async def test_delete_row(ds_write, table, row_for_create, pks, delete_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", ("no_token", "no_perm", "bad_table"))
+@pytest.mark.parametrize(
+    "scenario", ("no_token", "no_perm", "bad_table", "cannot_alter")
+)
 async def test_update_row_check_permission(ds_write, scenario):
     if scenario == "no_token":
         token = "bad_token"
     elif scenario == "no_perm":
         token = write_token(ds_write, actor_id="not-root")
+    elif scenario == "cannot_alter":
+        # update-row but no alter-table:
+        token = write_token(ds_write, permissions=["ur"])
     else:
         token = write_token(ds_write)
 
     pk = await _insert_row(ds_write)
 
-    path = "/data/{}/{}/-/delete".format(
+    path = "/data/{}/{}/-/update".format(
         "docs" if scenario != "bad_table" else "bad_table", pk
     )
 
+    json_body = {"update": {"title": "New title"}}
+    if scenario == "cannot_alter":
+        json_body["alter"] = True
+
     response = await ds_write.client.post(
         path,
-        json={"update": {"title": "New title"}},
+        json=json_body,
         headers=_headers(token),
     )
     assert response.status_code == 403 if scenario in ("no_token", "bad_token") else 404
@@ -609,6 +662,36 @@ async def test_update_row_check_permission(ds_write, scenario):
         if scenario == "no_token"
         else ["Table not found: bad_table"]
     )
+
+
+@pytest.mark.asyncio
+async def test_update_row_invalid_key(ds_write):
+    token = write_token(ds_write)
+
+    pk = await _insert_row(ds_write)
+
+    path = "/data/docs/{}/-/update".format(pk)
+    response = await ds_write.client.post(
+        path,
+        json={"update": {"title": "New title"}, "bad_key": 1},
+        headers=_headers(token),
+    )
+    assert response.status_code == 400
+    assert response.json() == {"ok": False, "errors": ["Invalid keys: bad_key"]}
+
+
+@pytest.mark.asyncio
+async def test_update_row_alter(ds_write):
+    token = write_token(ds_write, permissions=["ur", "at"])
+    pk = await _insert_row(ds_write)
+    path = "/data/docs/{}/-/update".format(pk)
+    response = await ds_write.client.post(
+        path,
+        json={"update": {"title": "New title", "extra": "extra"}, "alter": True},
+        headers=_headers(token),
+    )
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
 
 
 @pytest.mark.asyncio
@@ -1349,3 +1432,77 @@ async def test_method_not_allowed(ds_write, path):
         "ok": False,
         "error": "Method not allowed",
     }
+
+
+@pytest.mark.asyncio
+async def test_create_uses_alter_by_default_for_new_table(ds_write):
+    token = write_token(ds_write)
+    response = await ds_write.client.post(
+        "/data/-/create",
+        json={
+            "table": "new_table",
+            "rows": [
+                {
+                    "name": "Row 1",
+                }
+            ]
+            * 100
+            + [
+                {"name": "Row 2", "extra": "Extra"},
+            ],
+            "pk": "id",
+        },
+        headers=_headers(token),
+    )
+    assert response.status_code == 201
+    event = last_event(ds_write)
+    assert event.name == "create-table"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_alter_permission", (True, False))
+async def test_create_using_alter_against_existing_table(
+    ds_write, has_alter_permission
+):
+    token = write_token(
+        ds_write, permissions=["ir", "ct"] + (["at"] if has_alter_permission else [])
+    )
+    # First create the table
+    response = await ds_write.client.post(
+        "/data/-/create",
+        json={
+            "table": "new_table",
+            "rows": [
+                {
+                    "name": "Row 1",
+                }
+            ],
+            "pk": "id",
+        },
+        headers=_headers(token),
+    )
+    assert response.status_code == 201
+    # Now try to insert more rows using /-/create with alter=True
+    response2 = await ds_write.client.post(
+        "/data/-/create",
+        json={
+            "table": "new_table",
+            "rows": [{"name": "Row 2", "extra": "extra"}],
+            "pk": "id",
+            "alter": True,
+        },
+        headers=_headers(token),
+    )
+    if not has_alter_permission:
+        assert response2.status_code == 403
+        assert response2.json() == {
+            "ok": False,
+            "errors": ["Permission denied - need alter-table"],
+        }
+    else:
+        assert response2.status_code == 201
+        # It should have altered the table
+        event = last_event(ds_write)
+        assert event.name == "alter-table"
+        assert "extra" not in event.before_schema
+        assert "extra" in event.after_schema
