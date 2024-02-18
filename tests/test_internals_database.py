@@ -66,6 +66,33 @@ async def test_execute_fn(db):
     assert 2 == await db.execute_fn(get_1_plus_1)
 
 
+@pytest.mark.asyncio
+async def test_execute_fn_transaction_false():
+    datasette = Datasette(memory=True)
+    db = datasette.add_memory_database("test_execute_fn_transaction_false")
+
+    def run(conn):
+        try:
+            with conn:
+                conn.execute("create table foo (id integer primary key)")
+                conn.execute("insert into foo (id) values (44)")
+                # Table should exist
+                assert (
+                    conn.execute(
+                        'select count(*) from sqlite_master where name = "foo"'
+                    ).fetchone()[0]
+                    == 1
+                )
+                assert conn.execute("select id from foo").fetchall()[0][0] == 44
+                raise ValueError("Cancel commit")
+        except ValueError:
+            pass
+        # Row should NOT exist
+        assert conn.execute("select count(*) from foo").fetchone()[0] == 0
+
+    await db.execute_write_fn(run, transaction=False)
+
+
 @pytest.mark.parametrize(
     "tables,exists",
     (
@@ -474,9 +501,8 @@ async def test_execute_write_has_correctly_prepared_connection(db):
 @pytest.mark.asyncio
 async def test_execute_write_fn_block_false(db):
     def write_fn(conn):
-        with conn:
-            conn.execute("delete from roadside_attractions where pk = 1;")
-            row = conn.execute("select count(*) from roadside_attractions").fetchone()
+        conn.execute("delete from roadside_attractions where pk = 1;")
+        row = conn.execute("select count(*) from roadside_attractions").fetchone()
         return row[0]
 
     task_id = await db.execute_write_fn(write_fn, block=False)
@@ -486,9 +512,8 @@ async def test_execute_write_fn_block_false(db):
 @pytest.mark.asyncio
 async def test_execute_write_fn_block_true(db):
     def write_fn(conn):
-        with conn:
-            conn.execute("delete from roadside_attractions where pk = 1;")
-            row = conn.execute("select count(*) from roadside_attractions").fetchone()
+        conn.execute("delete from roadside_attractions where pk = 1;")
+        row = conn.execute("select count(*) from roadside_attractions").fetchone()
         return row[0]
 
     new_count = await db.execute_write_fn(write_fn)
