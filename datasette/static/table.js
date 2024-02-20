@@ -217,6 +217,25 @@ const initDatasetteTable = function (manager) {
       menuList.appendChild(menuItem);
     });
 
+    // Measure width of menu and adjust position if too far right
+    const menuWidth = menu.offsetWidth;
+    const windowWidth = window.innerWidth;
+    if (menuLeft + menuWidth > windowWidth) {
+      menu.style.left = windowWidth - menuWidth - 20 + "px";
+    }
+    // Align menu .hook arrow with the column cog icon
+    const hook = menu.querySelector('.hook');
+    const icon = th.querySelector('.dropdown-menu-icon');
+    const iconRect = icon.getBoundingClientRect();
+    const hookLeft = (iconRect.left - menuLeft + 1) + 'px';
+    hook.style.left = hookLeft;
+    // Move the whole menu right if the hook is too far right
+    const menuRect = menu.getBoundingClientRect();
+    if (iconRect.right > menuRect.right) {
+      menu.style.left = (iconRect.right - menuWidth) + 'px';
+      // And move hook tip as well
+      hook.style.left = (menuWidth - 13) + 'px';
+    }
   }
 
   var svg = document.createElement("div");
