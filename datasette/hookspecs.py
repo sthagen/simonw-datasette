@@ -141,8 +141,18 @@ def menu_links(datasette, actor, request):
 
 
 @hookspec
+def row_actions(datasette, actor, request, database, table, row):
+    """Links for the row actions menu"""
+
+
+@hookspec
 def table_actions(datasette, actor, database, table, request):
     """Links for the table actions menu"""
+
+
+@hookspec
+def view_actions(datasette, actor, database, view, request):
+    """Links for the view actions menu"""
 
 
 @hookspec
@@ -153,6 +163,11 @@ def query_actions(datasette, actor, database, query_name, request, sql, params):
 @hookspec
 def database_actions(datasette, actor, database, request):
     """Links for the database actions menu"""
+
+
+@hookspec
+def homepage_actions(datasette, actor, request):
+    """Links for the homepage actions menu"""
 
 
 @hookspec

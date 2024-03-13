@@ -392,6 +392,18 @@ def table_actions(datasette, database, table, actor):
 
 
 @hookimpl
+def view_actions(datasette, database, view, actor):
+    if actor:
+        return [
+            {
+                "href": datasette.urls.instance(),
+                "label": f"Database: {database}",
+            },
+            {"href": datasette.urls.instance(), "label": f"View: {view}"},
+        ]
+
+
+@hookimpl
 def query_actions(datasette, database, query_name, sql):
     # Don't explain an explain
     if sql.lower().startswith("explain"):
@@ -412,6 +424,18 @@ def query_actions(datasette, database, query_name, sql):
 
 
 @hookimpl
+def row_actions(datasette, database, table, actor, row):
+    if actor:
+        return [
+            {
+                "href": datasette.urls.instance(),
+                "label": f"Row details for {actor['id']}",
+                "description": json.dumps(dict(row), default=repr),
+            },
+        ]
+
+
+@hookimpl
 def database_actions(datasette, database, actor, request):
     if actor:
         label = f"Database: {database}"
@@ -420,6 +444,18 @@ def database_actions(datasette, database, actor, request):
         return [
             {
                 "href": datasette.urls.instance(),
+                "label": label,
+            }
+        ]
+
+
+@hookimpl
+def homepage_actions(datasette, actor, request):
+    if actor:
+        label = f"Custom homepage for: {actor['id']}"
+        return [
+            {
+                "href": datasette.urls.path("/-/custom-homepage"),
                 "label": label,
             }
         ]
