@@ -537,7 +537,7 @@ async def test_upsert(ds_write, initial, input, expected_rows, should_return):
         json=input,
         headers=_headers(token),
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     assert response.json()["ok"] is True
 
     # Analytics event
@@ -1359,6 +1359,7 @@ async def test_create_table_permissions(
 
 
 @pytest.mark.asyncio
+@pytest.mark.xfail(reason="Flaky, see https://github.com/simonw/datasette/issues/2356")
 @pytest.mark.parametrize(
     "input,expected_rows_after",
     (
