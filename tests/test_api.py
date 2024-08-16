@@ -390,6 +390,29 @@ async def test_database_page(ds_client):
             "private": False,
         },
         {
+            "name": "searchable_fts",
+            "columns": [
+                "text1",
+                "text2",
+                "name with . and spaces",
+            ]
+            + (
+                [
+                    "searchable_fts",
+                    "docid",
+                    "__langid",
+                ]
+                if supports_table_xinfo()
+                else []
+            ),
+            "primary_keys": [],
+            "count": 2,
+            "hidden": False,
+            "fts_table": "searchable_fts",
+            "foreign_keys": {"incoming": [], "outgoing": []},
+            "private": False,
+        },
+        {
             "name": "searchable_tags",
             "columns": ["searchable_id", "tag"],
             "primary_keys": ["searchable_id", "tag"],
@@ -522,29 +545,6 @@ async def test_database_page(ds_client):
             "count": 201,
             "hidden": True,
             "fts_table": None,
-            "foreign_keys": {"incoming": [], "outgoing": []},
-            "private": False,
-        },
-        {
-            "name": "searchable_fts",
-            "columns": [
-                "text1",
-                "text2",
-                "name with . and spaces",
-            ]
-            + (
-                [
-                    "searchable_fts",
-                    "docid",
-                    "__langid",
-                ]
-                if supports_table_xinfo()
-                else []
-            ),
-            "primary_keys": [],
-            "count": 2,
-            "hidden": True,
-            "fts_table": "searchable_fts",
             "foreign_keys": {"incoming": [], "outgoing": []},
             "private": False,
         },
@@ -835,6 +835,10 @@ async def test_versions_json(ds_client):
     assert "version" in data["sqlite"]
     assert "fts_versions" in data["sqlite"]
     assert "compile_options" in data["sqlite"]
+    # By default, the json1 extension is enabled in the SQLite
+    # provided by the `ubuntu-latest` github actions runner, and
+    # all versions of SQLite from 3.38.0 onwards
+    assert data["sqlite"]["extensions"]["json1"]
 
 
 @pytest.mark.asyncio
