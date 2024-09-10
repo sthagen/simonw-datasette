@@ -85,7 +85,7 @@ def sqlite_extensions(fn):
         "sqlite_extensions",
         "--load-extension",
         type=LoadExtension(),
-        envvar="SQLITE_EXTENSIONS",
+        envvar="DATASETTE_LOAD_EXTENSION",
         multiple=True,
         help="Path to a SQLite extension to load, and optional entrypoint",
     )(fn)
@@ -468,10 +468,12 @@ def uninstall(packages, yes):
 @click.option(
     "--ssl-keyfile",
     help="SSL key file",
+    envvar="DATASETTE_SSL_KEYFILE",
 )
 @click.option(
     "--ssl-certfile",
     help="SSL certificate file",
+    envvar="DATASETTE_SSL_CERTFILE",
 )
 @click.option(
     "--internal",
