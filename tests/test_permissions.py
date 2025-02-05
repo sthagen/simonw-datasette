@@ -371,12 +371,15 @@ def test_permissions_checked(app_client, path, permissions):
 
 
 @pytest.mark.asyncio
-async def test_permissions_debug(ds_client):
+@pytest.mark.parametrize("filter_", ("all", "exclude-yours", "only-yours"))
+async def test_permissions_debug(ds_client, filter_):
     ds_client.ds._permission_checks.clear()
     assert (await ds_client.get("/-/permissions")).status_code == 403
     # With the cookie it should work
     cookie = ds_client.actor_cookie({"id": "root"})
-    response = await ds_client.get("/-/permissions", cookies={"ds_actor": cookie})
+    response = await ds_client.get(
+        f"/-/permissions?filter={filter_}", cookies={"ds_actor": cookie}
+    )
     assert response.status_code == 200
     # Should have a select box listing permissions
     for fragment in (
@@ -387,7 +390,7 @@ async def test_permissions_debug(ds_client):
         assert fragment in response.text
     # Should show one failure and one success
     soup = Soup(response.text, "html.parser")
-    check_divs = soup.findAll("div", {"class": "check"})
+    check_divs = soup.find_all("div", {"class": "check"})
     checks = [
         {
             "action": div.select_one(".check-action").text,
@@ -398,17 +401,54 @@ async def test_permissions_debug(ds_client):
                 else bool(div.select(".check-result-true"))
             ),
             "used_default": bool(div.select(".check-used-default")),
+            "actor": json.loads(
+                div.find(
+                    "strong", string=lambda text: text and "Actor" in text
+                ).parent.text.split(": ", 1)[1]
+            ),
         }
         for div in check_divs
     ]
-    assert checks == [
-        {"action": "permissions-debug", "result": True, "used_default": False},
-        {"action": "view-instance", "result": None, "used_default": True},
-        {"action": "debug-menu", "result": False, "used_default": True},
-        {"action": "view-instance", "result": True, "used_default": True},
-        {"action": "permissions-debug", "result": False, "used_default": True},
-        {"action": "view-instance", "result": None, "used_default": True},
+    expected_checks = [
+        {
+            "action": "permissions-debug",
+            "result": True,
+            "used_default": False,
+            "actor": {"id": "root"},
+        },
+        {
+            "action": "view-instance",
+            "result": None,
+            "used_default": True,
+            "actor": {"id": "root"},
+        },
+        {"action": "debug-menu", "result": False, "used_default": True, "actor": None},
+        {
+            "action": "view-instance",
+            "result": True,
+            "used_default": True,
+            "actor": None,
+        },
+        {
+            "action": "permissions-debug",
+            "result": False,
+            "used_default": True,
+            "actor": None,
+        },
+        {
+            "action": "view-instance",
+            "result": None,
+            "used_default": True,
+            "actor": None,
+        },
     ]
+    if filter_ == "only-yours":
+        expected_checks = [
+            check for check in expected_checks if check["actor"] is not None
+        ]
+    elif filter_ == "exclude-yours":
+        expected_checks = [check for check in expected_checks if check["actor"] is None]
+    assert checks == expected_checks
 
 
 @pytest.mark.asyncio
@@ -889,6 +929,7 @@ async def test_actor_endpoint_allows_any_token():
     }
 
 
+@pytest.mark.serial
 @pytest.mark.parametrize(
     "options,expected",
     (
