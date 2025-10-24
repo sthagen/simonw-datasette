@@ -75,6 +75,11 @@ def register_permissions(datasette):
 
 
 @hookspec
+def register_actions(datasette):
+    """Register actions: returns a list of datasette.permission.Action objects"""
+
+
+@hookspec
 def register_routes(datasette):
     """Register URL routes: return a list of (regex, view_function) pairs"""
 
@@ -119,8 +124,8 @@ def permission_allowed(datasette, actor, action, resource):
 def permission_resources_sql(datasette, actor, action):
     """Return SQL query fragments for permission checks on resources.
 
-    Returns None, a PluginSQL object, or a list of PluginSQL objects.
-    Each PluginSQL contains SQL that should return rows with columns:
+    Returns None, a PermissionSQL object, or a list of PermissionSQL objects.
+    Each PermissionSQL contains SQL that should return rows with columns:
     parent (str|None), child (str|None), allow (int), reason (str).
 
     Used to efficiently check permissions across multiple resources at once.

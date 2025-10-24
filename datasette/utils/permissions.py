@@ -1,9 +1,11 @@
 # perm_utils.py
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+import json
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 import sqlite3
+
+from datasette.permissions import PermissionSQL
 
 
 # -----------------------------
@@ -11,66 +13,33 @@ import sqlite3
 # -----------------------------
 
 
-@dataclass
-class PluginSQL:
-    """
-    A plugin contributes SQL that yields:
-      parent TEXT NULL,
-      child  TEXT NULL,
-      allow  INTEGER,    -- 1 allow, 0 deny
-      reason TEXT
-    """
-
-    source: str  # identifier used for auditing (e.g., plugin name)
-    sql: str  # SQL that SELECTs the 4 columns above
-    params: Dict[str, Any]  # bound params for the SQL (values only; no ':' prefix)
-
-
-def _namespace_params(i: int, params: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
-    """
-    Rewrite parameter placeholders to distinct names per plugin block.
-    Returns (rewritten_sql, namespaced_params).
-    """
-
-    replacements = {key: f"{key}_{i}" for key in params.keys()}
-
-    def rewrite(s: str) -> str:
-        for key in sorted(replacements.keys(), key=len, reverse=True):
-            s = s.replace(f":{key}", f":{replacements[key]}")
-        return s
-
-    namespaced: Dict[str, Any] = {}
-    for key, value in params.items():
-        namespaced[replacements[key]] = value
-    return rewrite, namespaced
-
-
-PluginProvider = Callable[[str], PluginSQL]
-PluginOrFactory = Union[PluginSQL, PluginProvider]
-
-
 def build_rules_union(
-    actor: str, plugins: Sequence[PluginSQL]
+    actor: dict | None, plugins: Sequence[PermissionSQL]
 ) -> Tuple[str, Dict[str, Any]]:
     """
-    Compose plugin SQL into a UNION ALL with namespaced parameters.
+    Compose plugin SQL into a UNION ALL.
 
     Returns:
       union_sql: a SELECT with columns (parent, child, allow, reason, source_plugin)
-      params:    dict of bound parameters including :actor and namespaced plugin params
+      params:    dict of bound parameters including :actor (JSON), :actor_id, and plugin params
+
+    Note: Plugins are responsible for ensuring their parameter names don't conflict.
+    The system reserves these parameter names: :actor, :actor_id, :action, :filter_parent
+    Plugin parameters should be prefixed with a unique identifier (e.g., source name).
     """
     parts: List[str] = []
-    params: Dict[str, Any] = {"actor": actor}
+    actor_json = json.dumps(actor) if actor else None
+    actor_id = actor.get("id") if actor else None
+    params: Dict[str, Any] = {"actor": actor_json, "actor_id": actor_id}
 
-    for i, p in enumerate(plugins):
-        rewrite, ns_params = _namespace_params(i, p.params)
-        sql_block = rewrite(p.sql)
-        params.update(ns_params)
+    for p in plugins:
+        # No namespacing - just use plugin params as-is
+        params.update(p.params)
 
         parts.append(
             f"""
             SELECT parent, child, allow, reason, '{p.source}' AS source_plugin FROM (
-                {sql_block}
+                {p.sql}
             )
             """.strip()
         )
@@ -91,11 +60,11 @@ def build_rules_union(
 
 async def resolve_permissions_from_catalog(
     db,
-    actor: str,
-    plugins: Sequence[PluginOrFactory],
+    actor: dict | None,
+    plugins: Sequence[Any],
     action: str,
     candidate_sql: str,
-    candidate_params: Optional[Dict[str, Any]] = None,
+    candidate_params: Dict[str, Any] | None = None,
     *,
     implicit_deny: bool = True,
 ) -> List[Dict[str, Any]]:
@@ -107,8 +76,9 @@ async def resolve_permissions_from_catalog(
         (Use child=NULL for parent-scoped actions like "execute-sql".)
       - *db* exposes: rows = await db.execute(sql, params)
         where rows is an iterable of sqlite3.Row
-      - plugins are either PluginSQL objects or callables accepting (action: str)
-        and returning PluginSQL instances selecting (parent, child, allow, reason)
+      - plugins: hook results handled by await_me_maybe - can be sync/async,
+        single PermissionSQL, list, or callable returning PermissionSQL
+      - actor is the actor dict (or None), made available as :actor (JSON), :actor_id, and :action
 
     Decision policy:
       1) Specificity first: child (depth=2) > parent (depth=1) > root (depth=0)
@@ -121,21 +91,20 @@ async def resolve_permissions_from_catalog(
       - parent, child, allow, reason, source_plugin, depth
       - resource (rendered "/parent/child" or "/parent" or "/")
     """
-    resolved_plugins: List[PluginSQL] = []
+    resolved_plugins: List[PermissionSQL] = []
     for plugin in plugins:
-        if callable(plugin) and not isinstance(plugin, PluginSQL):
+        if callable(plugin) and not isinstance(plugin, PermissionSQL):
             resolved = plugin(action)  # type: ignore[arg-type]
         else:
             resolved = plugin  # type: ignore[assignment]
-        if not isinstance(resolved, PluginSQL):
-            raise TypeError("Plugin providers must return PluginSQL instances")
+        if not isinstance(resolved, PermissionSQL):
+            raise TypeError("Plugin providers must return PermissionSQL instances")
         resolved_plugins.append(resolved)
 
     union_sql, rule_params = build_rules_union(actor, resolved_plugins)
     all_params = {
         **(candidate_params or {}),
         **rule_params,
-        "actor": actor,
         "action": action,
     }
 
@@ -205,9 +174,9 @@ async def resolve_permissions_from_catalog(
 
 async def resolve_permissions_with_candidates(
     db,
-    actor: str,
-    plugins: Sequence[PluginOrFactory],
-    candidates: List[Tuple[str, Optional[str]]],
+    actor: dict | None,
+    plugins: Sequence[Any],
+    candidates: List[Tuple[str, str | None]],
     action: str,
     *,
     implicit_deny: bool = True,
@@ -217,6 +186,7 @@ async def resolve_permissions_with_candidates(
     the candidates as a UNION of parameterized SELECTs in a CTE.
 
     candidates: list of (parent, child) where child can be None for parent-scoped actions.
+    actor: actor dict (or None), made available as :actor (JSON), :actor_id, and :action
     """
     # Build a small CTE for candidates.
     cand_rows_sql: List[str] = []

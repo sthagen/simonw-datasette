@@ -1,5 +1,5 @@
 from datasette import hookimpl, Permission
-from datasette.utils.permissions import PluginSQL
+from datasette.permissions import PermissionSQL
 from datasette.utils import actor_matches_allow
 import itsdangerous
 import time
@@ -128,56 +128,118 @@ def register_permissions():
 
 
 @hookimpl(tryfirst=True, specname="permission_allowed")
-def permission_allowed_default(datasette, actor, action, resource):
-    async def inner():
-        # id=root gets some special permissions:
-        if action in (
-            "permissions-debug",
-            "debug-menu",
-            "insert-row",
-            "create-table",
-            "alter-table",
-            "drop-table",
-            "delete-row",
-            "update-row",
-        ):
-            if actor and actor.get("id") == "root":
-                return True
+async def permission_allowed_sql_bridge(datasette, actor, action, resource):
+    """
+    Bridge config-based permission rules to the old permission_allowed API.
 
-        # Resolve view permissions in allow blocks in configuration
-        if action in (
-            "view-instance",
-            "view-database",
-            "view-table",
-            "view-query",
-            "execute-sql",
-        ):
-            result = await _resolve_config_view_permissions(
-                datasette, actor, action, resource
+    This allows views using the old string/tuple resource API to benefit from
+    config blocks defined in datasette.yaml without using the new resource-based system.
+
+    Note: This does NOT apply default allow rules - those should come from the
+    Permission object's default value to maintain backward compatibility.
+    """
+    # Only check config-based rules - don't apply defaults
+    config_rules = await _config_permission_rules(datasette, actor, action)
+    if not config_rules:
+        return None
+
+    # Evaluate config rules for this specific resource
+    for rule in config_rules:
+        if rule.params:  # Has config-based rules
+            from datasette.utils.permissions import resolve_permissions_with_candidates
+
+            # Build candidate based on resource
+            if resource is None:
+                candidates = [(None, None)]
+            elif isinstance(resource, str):
+                candidates = [(resource, None)]
+            elif isinstance(resource, tuple):
+                candidates = [(resource[0], resource[1])]
+            else:
+                return None
+
+            db = datasette.get_internal_database()
+            results = await resolve_permissions_with_candidates(
+                db, actor, [rule], candidates, action, implicit_deny=False
             )
-            if result is not None:
-                return result
+            if results:
+                # Use the first result's allow value
+                for result in results:
+                    if result.get("allow") is not None:
+                        return bool(result["allow"])
+    return None
 
-        # Resolve custom permissions: blocks in configuration
-        result = await _resolve_config_permissions_blocks(
-            datasette, actor, action, resource
-        )
-        if result is not None:
-            return result
 
-        # --setting default_allow_sql
-        if action == "execute-sql" and not datasette.setting("default_allow_sql"):
+@hookimpl(tryfirst=True, specname="permission_allowed")
+def permission_allowed_default_allow_sql(datasette, actor, action, resource):
+    """
+    Enforce the default_allow_sql setting for execute-sql permission.
+
+    When default_allow_sql is set to False, deny all execute-sql permissions.
+    This runs before other permission checks to ensure the setting is respected.
+    """
+    if action == "execute-sql":
+        if not datasette.setting("default_allow_sql"):
             return False
+    return None
 
-    return inner
+
+@hookimpl(tryfirst=True, specname="permission_allowed")
+def permission_allowed_root(datasette, actor, action, resource):
+    """
+    Grant all permissions to root user when Datasette started with --root flag.
+
+    The --root flag is a localhost development tool. When used, it sets
+    datasette.root_enabled = True and creates an actor with id="root".
+    This hook grants that actor all permissions.
+
+    Other plugins can use the same pattern: check datasette.root_enabled
+    to decide whether to honor root users.
+    """
+    if datasette.root_enabled and actor and actor.get("id") == "root":
+        return True
+    return None
 
 
 @hookimpl
 async def permission_resources_sql(datasette, actor, action):
-    rules: list[PluginSQL] = []
+    rules: list[PermissionSQL] = []
+
+    # Root user with root_enabled gets all permissions at global level
+    # Config rules at more specific levels (database/table) can still override
+    if datasette.root_enabled and actor and actor.get("id") == "root":
+        # Add a single global-level allow rule (NULL, NULL) for root
+        # This allows root to access everything by default, but database-level
+        # and table-level deny rules in config can still block specific resources
+        sql = "SELECT NULL AS parent, NULL AS child, 1 AS allow, 'root user' AS reason"
+        rules.append(
+            PermissionSQL(
+                source="root_permissions",
+                sql=sql,
+                params={},
+            )
+        )
 
     config_rules = await _config_permission_rules(datasette, actor, action)
     rules.extend(config_rules)
+
+    # Check default_allow_sql setting for execute-sql action
+    if action == "execute-sql" and not datasette.setting("default_allow_sql"):
+        # Return a deny rule for all databases
+        sql = "SELECT NULL AS parent, NULL AS child, 0 AS allow, 'default_allow_sql is false' AS reason"
+        rules.append(
+            PermissionSQL(
+                source="default_allow_sql_setting",
+                sql=sql,
+                params={},
+            )
+        )
+        # Early return - don't add default allow rule
+        if not rules:
+            return None
+        if len(rules) == 1:
+            return rules[0]
+        return rules
 
     default_allow_actions = {
         "view-instance",
@@ -191,7 +253,7 @@ async def permission_resources_sql(datasette, actor, action):
             "SELECT NULL AS parent, NULL AS child, 1 AS allow, " f"'{reason}' AS reason"
         )
         rules.append(
-            PluginSQL(
+            PermissionSQL(
                 source="default_permissions",
                 sql=sql,
                 params={},
@@ -205,7 +267,7 @@ async def permission_resources_sql(datasette, actor, action):
     return rules
 
 
-async def _config_permission_rules(datasette, actor, action) -> list[PluginSQL]:
+async def _config_permission_rules(datasette, actor, action) -> list[PermissionSQL]:
     config = datasette.config or {}
 
     if actor is None:
@@ -235,6 +297,21 @@ async def _config_permission_rules(datasette, actor, action) -> list[PluginSQL]:
             )
         )
 
+    def add_row_allow_block(parent, child, allow_block, scope):
+        """For 'allow' blocks, always add a row if the block exists - deny if no match"""
+        if allow_block is None:
+            return
+        result = evaluate(allow_block)
+        # If result is None (no match) or False, treat as deny
+        rows.append(
+            (
+                parent,
+                child,
+                bool(result),  # None becomes False, False stays False, True stays True
+                f"config {'allow' if result else 'deny'} {scope}",
+            )
+        )
+
     root_perm = (config.get("permissions") or {}).get(action)
     add_row(None, None, evaluate(root_perm), f"permissions for {action}")
 
@@ -255,59 +332,72 @@ async def _config_permission_rules(datasette, actor, action) -> list[PluginSQL]:
 
             if action == "view-table":
                 table_allow = (table_config or {}).get("allow")
-                add_row(
+                add_row_allow_block(
                     db_name,
                     table_name,
-                    evaluate(table_allow),
+                    table_allow,
                     f"allow for {action} on {db_name}/{table_name}",
                 )
 
         for query_name, query_config in (db_config.get("queries") or {}).items():
-            query_perm = (query_config.get("permissions") or {}).get(action)
-            add_row(
-                db_name,
-                query_name,
-                evaluate(query_perm),
-                f"permissions for {action} on {db_name}/{query_name}",
-            )
-            if action == "view-query":
-                query_allow = (query_config or {}).get("allow")
+            # query_config can be a string (just SQL) or a dict (with SQL and options)
+            if isinstance(query_config, dict):
+                query_perm = (query_config.get("permissions") or {}).get(action)
                 add_row(
                     db_name,
                     query_name,
-                    evaluate(query_allow),
-                    f"allow for {action} on {db_name}/{query_name}",
+                    evaluate(query_perm),
+                    f"permissions for {action} on {db_name}/{query_name}",
                 )
+                if action == "view-query":
+                    query_allow = query_config.get("allow")
+                    add_row_allow_block(
+                        db_name,
+                        query_name,
+                        query_allow,
+                        f"allow for {action} on {db_name}/{query_name}",
+                    )
 
         if action == "view-database":
             db_allow = db_config.get("allow")
-            add_row(
-                db_name, None, evaluate(db_allow), f"allow for {action} on {db_name}"
+            add_row_allow_block(
+                db_name, None, db_allow, f"allow for {action} on {db_name}"
             )
 
         if action == "execute-sql":
             db_allow_sql = db_config.get("allow_sql")
-            add_row(db_name, None, evaluate(db_allow_sql), f"allow_sql for {db_name}")
+            add_row_allow_block(db_name, None, db_allow_sql, f"allow_sql for {db_name}")
 
+        if action == "view-table":
+            # Database-level allow block affects all tables in that database
+            db_allow = db_config.get("allow")
+            add_row_allow_block(
+                db_name, None, db_allow, f"allow for {action} on {db_name}"
+            )
+
+    # Root-level allow block applies to all view-* actions
     if action == "view-instance":
         allow_block = config.get("allow")
-        add_row(None, None, evaluate(allow_block), "allow for view-instance")
+        add_row_allow_block(None, None, allow_block, "allow for view-instance")
+
+    if action == "view-database":
+        # Root-level allow block also applies to view-database
+        allow_block = config.get("allow")
+        add_row_allow_block(None, None, allow_block, "allow for view-database")
 
     if action == "view-table":
-        # Tables handled in loop
-        pass
+        # Root-level allow block also applies to view-table
+        allow_block = config.get("allow")
+        add_row_allow_block(None, None, allow_block, "allow for view-table")
 
     if action == "view-query":
-        # Queries handled in loop
-        pass
+        # Root-level allow block also applies to view-query
+        allow_block = config.get("allow")
+        add_row_allow_block(None, None, allow_block, "allow for view-query")
 
     if action == "execute-sql":
         allow_sql = config.get("allow_sql")
-        add_row(None, None, evaluate(allow_sql), "allow_sql")
-
-    if action == "view-database":
-        # already handled per-database
-        pass
+        add_row_allow_block(None, None, allow_sql, "allow_sql")
 
     if not rows:
         return []
@@ -325,109 +415,7 @@ async def _config_permission_rules(datasette, actor, action) -> list[PluginSQL]:
         params[f"{key}_reason"] = reason
 
     sql = "\nUNION ALL\n".join(parts)
-    print(sql, params)
-    return [PluginSQL(source="config_permissions", sql=sql, params=params)]
-
-
-async def _resolve_config_permissions_blocks(datasette, actor, action, resource):
-    # Check custom permissions: blocks
-    config = datasette.config or {}
-    root_block = (config.get("permissions", None) or {}).get(action)
-    if root_block:
-        root_result = actor_matches_allow(actor, root_block)
-        if root_result is not None:
-            return root_result
-    # Now try database-specific blocks
-    if not resource:
-        return None
-    if isinstance(resource, str):
-        database = resource
-    else:
-        database = resource[0]
-    database_block = (
-        (config.get("databases", {}).get(database, {}).get("permissions", None)) or {}
-    ).get(action)
-    if database_block:
-        database_result = actor_matches_allow(actor, database_block)
-        if database_result is not None:
-            return database_result
-    # Finally try table/query specific blocks
-    if not isinstance(resource, tuple):
-        return None
-    database, table_or_query = resource
-    table_block = (
-        (
-            config.get("databases", {})
-            .get(database, {})
-            .get("tables", {})
-            .get(table_or_query, {})
-            .get("permissions", None)
-        )
-        or {}
-    ).get(action)
-    if table_block:
-        table_result = actor_matches_allow(actor, table_block)
-        if table_result is not None:
-            return table_result
-    # Finally the canned queries
-    query_block = (
-        (
-            config.get("databases", {})
-            .get(database, {})
-            .get("queries", {})
-            .get(table_or_query, {})
-            .get("permissions", None)
-        )
-        or {}
-    ).get(action)
-    if query_block:
-        query_result = actor_matches_allow(actor, query_block)
-        if query_result is not None:
-            return query_result
-    return None
-
-
-async def _resolve_config_view_permissions(datasette, actor, action, resource):
-    config = datasette.config or {}
-    if action == "view-instance":
-        allow = config.get("allow")
-        if allow is not None:
-            return actor_matches_allow(actor, allow)
-    elif action == "view-database":
-        database_allow = ((config.get("databases") or {}).get(resource) or {}).get(
-            "allow"
-        )
-        if database_allow is None:
-            return None
-        return actor_matches_allow(actor, database_allow)
-    elif action == "view-table":
-        database, table = resource
-        tables = ((config.get("databases") or {}).get(database) or {}).get(
-            "tables"
-        ) or {}
-        table_allow = (tables.get(table) or {}).get("allow")
-        if table_allow is None:
-            return None
-        return actor_matches_allow(actor, table_allow)
-    elif action == "view-query":
-        # Check if this query has a "allow" block in config
-        database, query_name = resource
-        query = await datasette.get_canned_query(database, query_name, actor)
-        assert query is not None
-        allow = query.get("allow")
-        if allow is None:
-            return None
-        return actor_matches_allow(actor, allow)
-    elif action == "execute-sql":
-        # Use allow_sql block from database block, or from top-level
-        database_allow_sql = ((config.get("databases") or {}).get(resource) or {}).get(
-            "allow_sql"
-        )
-        if database_allow_sql is None:
-            database_allow_sql = config.get("allow_sql")
-        if database_allow_sql is None:
-            return None
-        return actor_matches_allow(actor, database_allow_sql)
+    return [PermissionSQL(source="config_permissions", sql=sql, params=params)]
 
 
 def restrictions_allow_action(

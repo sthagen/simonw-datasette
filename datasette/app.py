@@ -52,6 +52,7 @@ from .views.special import (
     AllowedResourcesView,
     PermissionRulesView,
     PermissionCheckView,
+    TablesView,
 )
 from .views.table import (
     TableInsertView,
@@ -114,7 +115,8 @@ from .tracer import AsgiTracer
 from .plugins import pm, DEFAULT_PLUGINS, get_plugins
 from .version import __version__
 
-from .utils.permissions import build_rules_union, PluginSQL
+from .permissions import PermissionSQL
+from .utils.permissions import build_rules_union
 
 app_root = Path(__file__).parent.parent
 
@@ -308,6 +310,7 @@ class Datasette:
         self.immutables = set(immutables or [])
         self.databases = collections.OrderedDict()
         self.permissions = {}  # .invoke_startup() will populate this
+        self.actions = {}  # .invoke_startup() will populate this
         try:
             self._refresh_schemas_lock = asyncio.Lock()
         except RuntimeError as rex:
@@ -391,10 +394,37 @@ class Datasette:
         config = config or {}
         config_settings = config.get("settings") or {}
 
-        # validate "settings" keys in datasette.json
-        for key in config_settings:
+        # Validate settings from config file
+        for key, value in config_settings.items():
             if key not in DEFAULT_SETTINGS:
-                raise StartupError("Invalid setting '{}' in datasette.json".format(key))
+                raise StartupError(f"Invalid setting '{key}' in config file")
+            # Validate type matches expected type from DEFAULT_SETTINGS
+            if value is not None:  # Allow None/null values
+                expected_type = type(DEFAULT_SETTINGS[key])
+                actual_type = type(value)
+                if actual_type != expected_type:
+                    raise StartupError(
+                        f"Setting '{key}' in config file has incorrect type. "
+                        f"Expected {expected_type.__name__}, got {actual_type.__name__}. "
+                        f"Value: {value!r}. "
+                        f"Hint: In YAML/JSON config files, remove quotes from boolean and integer values."
+                    )
+
+        # Validate settings from constructor parameter
+        if settings:
+            for key, value in settings.items():
+                if key not in DEFAULT_SETTINGS:
+                    raise StartupError(f"Invalid setting '{key}' in settings parameter")
+                if value is not None:
+                    expected_type = type(DEFAULT_SETTINGS[key])
+                    actual_type = type(value)
+                    if actual_type != expected_type:
+                        raise StartupError(
+                            f"Setting '{key}' in settings parameter has incorrect type. "
+                            f"Expected {expected_type.__name__}, got {actual_type.__name__}. "
+                            f"Value: {value!r}"
+                        )
+
         self.config = config
         # CLI settings should overwrite datasette.json settings
         self._settings = dict(DEFAULT_SETTINGS, **(config_settings), **(settings or {}))
@@ -457,6 +487,7 @@ class Datasette:
         self._register_renderers()
         self._permission_checks = collections.deque(maxlen=200)
         self._root_token = secrets.token_hex(32)
+        self.root_enabled = False
         self.client = DatasetteClient(self)
 
     async def apply_metadata_json(self):
@@ -589,6 +620,33 @@ class Datasette:
                     if p.abbr:
                         abbrs[p.abbr] = p
                     self.permissions[p.name] = p
+
+        # Register actions, but watch out for duplicate name/abbr
+        action_names = {}
+        action_abbrs = {}
+        for hook in pm.hook.register_actions(datasette=self):
+            if hook:
+                for action in hook:
+                    if (
+                        action.name in action_names
+                        and action != action_names[action.name]
+                    ):
+                        raise StartupError(
+                            "Duplicate action name: {}".format(action.name)
+                        )
+                    if (
+                        action.abbr
+                        and action.abbr in action_abbrs
+                        and action != action_abbrs[action.abbr]
+                    ):
+                        raise StartupError(
+                            "Duplicate action abbr: {}".format(action.abbr)
+                        )
+                    action_names[action.name] = action
+                    if action.abbr:
+                        action_abbrs[action.abbr] = action
+                    self.actions[action.name] = action
+
         for hook in pm.hook.prepare_jinja2_environment(
             env=self._jinja_env, datasette=self
         ):
@@ -1035,14 +1093,15 @@ class Datasette:
         )
         return result
 
-    async def allowed_resources_sql(
+    async def _build_permission_rules_sql(
         self, actor: dict | None, action: str
     ) -> tuple[str, dict]:
-        """Combine permission_resources_sql PluginSQL blocks into a UNION query.
+        """Combine permission_resources_sql PermissionSQL blocks into a UNION query.
 
         Returns a (sql, params) tuple suitable for execution against SQLite.
+        Internal helper for permission_allowed_2.
         """
-        plugin_blocks: List[PluginSQL] = []
+        plugin_blocks: List[PermissionSQL] = []
         for block in pm.hook.permission_resources_sql(
             datasette=self,
             actor=actor,
@@ -1058,13 +1117,10 @@ class Datasette:
             for candidate in candidates:
                 if candidate is None:
                     continue
-                if not isinstance(candidate, PluginSQL):
-                    continue
                 plugin_blocks.append(candidate)
 
-        actor_id = actor.get("id") if actor else None
         sql, params = build_rules_union(
-            actor=str(actor_id) if actor_id is not None else "",
+            actor=actor,
             plugins=plugin_blocks,
         )
         return sql, params
@@ -1092,7 +1148,9 @@ class Datasette:
         elif resource is not None:
             raise TypeError("resource must be None, str, or (parent, child) tuple")
 
-        union_sql, union_params = await self.allowed_resources_sql(actor_dict, action)
+        union_sql, union_params = await self._build_permission_rules_sql(
+            actor_dict, action
+        )
 
         query = f"""
         WITH rules AS (
@@ -1241,6 +1299,170 @@ class Datasette:
             return True, True
         # It's visible to everyone
         return True, False
+
+    async def allowed_resources_sql(
+        self,
+        *,
+        action: str,
+        actor: dict | None = None,
+        parent: str | None = None,
+        include_is_private: bool = False,
+    ) -> tuple[str, dict]:
+        """
+        Build SQL query to get all resources the actor can access for the given action.
+
+        Args:
+            action: The action name (e.g., "view-table")
+            actor: The actor dict (or None for unauthenticated)
+            parent: Optional parent filter (e.g., database name) to limit results
+            include_is_private: If True, include is_private column showing if anonymous cannot access
+
+        Returns a tuple of (query, params) that can be executed against the internal database.
+        The query returns rows with (parent, child, reason) columns, plus is_private if requested.
+
+        Example:
+            query, params = await datasette.allowed_resources_sql(
+                action="view-table",
+                actor=actor,
+                parent="mydb",
+                include_is_private=True
+            )
+            result = await datasette.get_internal_database().execute(query, params)
+        """
+        from datasette.utils.actions_sql import build_allowed_resources_sql
+
+        action_obj = self.actions.get(action)
+        if not action_obj:
+            raise ValueError(f"Unknown action: {action}")
+
+        return await build_allowed_resources_sql(
+            self, actor, action, parent=parent, include_is_private=include_is_private
+        )
+
+    async def allowed_resources(
+        self,
+        action: str,
+        actor: dict | None = None,
+        *,
+        parent: str | None = None,
+        include_is_private: bool = False,
+    ) -> list["Resource"]:
+        """
+        Return all resources the actor can access for the given action.
+
+        Uses SQL to filter resources based on cascading permission rules.
+        Returns instances of the appropriate Resource subclass.
+
+        Args:
+            action: The action name (e.g., "view-table")
+            actor: The actor dict (or None for unauthenticated)
+            parent: Optional parent filter (e.g., database name) to limit results
+            include_is_private: If True, adds a .private attribute to each Resource
+
+        Example:
+            # Get all tables
+            tables = await datasette.allowed_resources("view-table", actor)
+            for table in tables:
+                print(f"{table.parent}/{table.child}")
+
+            # Get tables for specific database with private flag
+            tables = await datasette.allowed_resources(
+                "view-table", actor, parent="mydb", include_is_private=True
+            )
+            for table in tables:
+                if table.private:
+                    print(f"{table.child} is private")
+        """
+        from datasette.permissions import Resource
+
+        action_obj = self.actions.get(action)
+        if not action_obj:
+            raise ValueError(f"Unknown action: {action}")
+
+        query, params = await self.allowed_resources_sql(
+            action=action,
+            actor=actor,
+            parent=parent,
+            include_is_private=include_is_private,
+        )
+        result = await self.get_internal_database().execute(query, params)
+
+        # Instantiate the appropriate Resource subclass for each row
+        resource_class = action_obj.resource_class
+        resources = []
+        for row in result.rows:
+            # row[0]=parent, row[1]=child, row[2]=reason (ignored), row[3]=is_private (if requested)
+            # Create instance directly with parent/child from base class
+            resource = object.__new__(resource_class)
+            Resource.__init__(resource, parent=row[0], child=row[1])
+            if include_is_private:
+                resource.private = bool(row[3])
+            resources.append(resource)
+
+        return resources
+
+    async def allowed_resources_with_reasons(
+        self,
+        action: str,
+        actor: dict | None = None,
+    ) -> list["AllowedResource"]:
+        """
+        Return allowed resources with permission reasons for debugging.
+
+        Uses SQL to filter resources and includes the reason each was allowed.
+        Returns list of AllowedResource named tuples with (resource, reason).
+
+        Example:
+            debug_info = await datasette.allowed_resources_with_reasons("view-table", actor)
+            for allowed in debug_info:
+                print(f"{allowed.resource}: {allowed.reason}")
+        """
+        from datasette.permissions import AllowedResource, Resource
+
+        action_obj = self.actions.get(action)
+        if not action_obj:
+            raise ValueError(f"Unknown action: {action}")
+
+        query, params = await self.allowed_resources_sql(action=action, actor=actor)
+        result = await self.get_internal_database().execute(query, params)
+
+        resource_class = action_obj.resource_class
+        resources = []
+        for row in result.rows:
+            # Create instance directly with parent/child from base class
+            resource = object.__new__(resource_class)
+            Resource.__init__(resource, parent=row[0], child=row[1])
+            reason = row[2]
+            resources.append(AllowedResource(resource=resource, reason=reason))
+
+        return resources
+
+    async def allowed(
+        self,
+        *,
+        action: str,
+        resource: "Resource",
+        actor: dict | None = None,
+    ) -> bool:
+        """
+        Check if actor can perform action on specific resource.
+
+        Uses SQL to check permission for a single resource without fetching all resources.
+        This is efficient - it does NOT call allowed_resources() and check membership.
+
+        Example:
+            from datasette.resources import TableResource
+            can_view = await datasette.allowed(
+                action="view-table",
+                resource=TableResource(database="analytics", table="users"),
+                actor=actor
+            )
+        """
+        from datasette.utils.actions_sql import check_permission_for_resource
+
+        return await check_permission_for_resource(
+            self, actor, action, resource.parent, resource.child
+        )
 
     async def execute(
         self,
@@ -1725,6 +1947,10 @@ class Datasette:
         add_route(
             ApiExplorerView.as_view(self),
             r"/-/api$",
+        )
+        add_route(
+            TablesView.as_view(self),
+            r"/-/tables(\.(?P<format>json))?$",
         )
         add_route(
             LogoutView.as_view(self),
