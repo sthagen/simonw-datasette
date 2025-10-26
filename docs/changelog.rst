@@ -577,7 +577,7 @@ Documentation
 .. _v0_62:
 
 0.62 (2022-08-14)
--------------------
+-----------------
 
 Datasette can now run entirely in your browser using WebAssembly. Try out `Datasette Lite <https://lite.datasette.io/>`__, take a look `at the code <https://github.com/simonw/datasette-lite>`__ or read more about it in `Datasette Lite: a server-side Python web application running in a browser <https://simonwillison.net/2022/May/4/datasette-lite/>`__.
 
@@ -643,7 +643,7 @@ Datasette also now requires Python 3.7 or higher.
 - Datasette is now covered by a `Code of Conduct <https://github.com/simonw/datasette/blob/main/CODE_OF_CONDUCT.md>`__. (:issue:`1654`)
 - Python 3.6 is no longer supported. (:issue:`1577`)
 - Tests now run against Python 3.11-dev. (:issue:`1621`)
-- New :ref:`datasette.ensure_permissions(actor, permissions) <datasette_ensure_permissions>` internal method for checking multiple permissions at once. (:issue:`1675`)
+- New ``datasette.ensure_permissions(actor, permissions)`` internal method for checking multiple permissions at once. (:issue:`1675`)
 - New :ref:`datasette.check_visibility(actor, action, resource=None) <datasette_check_visibility>` internal method for checking if a user can see a resource that would otherwise be invisible to unauthenticated users. (:issue:`1678`)
 - Table and row HTML pages now include a ``<link rel="alternate" type="application/json+datasette" href="...">`` element and return a ``Link: URL; rel="alternate"; type="application/json+datasette"`` HTTP header pointing to the JSON version of those pages. (:issue:`1533`)
 - ``Access-Control-Expose-Headers: Link`` is now added to the CORS headers, allowing remote JavaScript to access that header.

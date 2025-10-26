@@ -26,8 +26,8 @@
             <label for="action">Action (permission name):</label>
             <select id="action" name="action" required>
                 <option value="">Select an action...</option>
-                {% for permission_name in supported_actions %}
-                <option value="{{ permission_name }}">{{ permission_name }}</option>
+                {% for action_name in supported_actions %}
+                <option value="{{ action_name }}">{{ action_name }}</option>
                 {% endfor %}
             </select>
             <small>Only certain actions are supported by this endpoint</small>
@@ -42,7 +42,7 @@
         <div class="form-section">
             <label for="child">Filter by child (optional):</label>
             <input type="text" id="child" name="child" placeholder="e.g., table name">
-            <small>Filter results to a specific child resource (requires parent)</small>
+            <small>Filter results to a specific child resource (requires parent to be set)</small>
         </div>
 
         <div class="form-section">
@@ -80,6 +80,7 @@ const resultsContent = document.getElementById('results-content');
 const resultsCount = document.getElementById('results-count');
 const pagination = document.getElementById('pagination');
 const submitBtn = document.getElementById('submit-btn');
+const hasDebugPermission = {{ 'true' if has_debug_permission else 'false' }};
 let currentData = null;
 
 form.addEventListener('submit', async (ev) => {
@@ -164,8 +165,9 @@ function displayResults(data) {
         html += '<th>Resource Path</th>';
         html += '<th>Parent</th>';
         html += '<th>Child</th>';
-        html += '<th>Reason</th>';
-        html += '<th>Source Plugin</th>';
+        if (hasDebugPermission) {
+            html += '<th>Reason</th>';
+        }
         html += '</tr></thead>';
         html += '<tbody>';
 
@@ -174,8 +176,14 @@ function displayResults(data) {
             html += `<td><span class="resource-path">${escapeHtml(item.resource || '/')}</span></td>`;
             html += `<td>${escapeHtml(item.parent || '—')}</td>`;
             html += `<td>${escapeHtml(item.child || '—')}</td>`;
-            html += `<td>${escapeHtml(item.reason || '—')}</td>`;
-            html += `<td>${escapeHtml(item.source_plugin || '—')}</td>`;
+            if (hasDebugPermission) {
+                // Display reason as JSON array
+                let reasonHtml = '—';
+                if (item.reason && Array.isArray(item.reason)) {
+                    reasonHtml = `<code>${escapeHtml(JSON.stringify(item.reason))}</code>`;
+                }
+                html += `<td>${reasonHtml}</td>`;
+            }
             html += '</tr>';
         }
 
@@ -238,12 +246,15 @@ function displayError(data) {
 const parentInput = document.getElementById('parent');
 const childInput = document.getElementById('child');
 
-childInput.addEventListener('focus', () => {
+parentInput.addEventListener('input', () => {
+    childInput.disabled = !parentInput.value;
     if (!parentInput.value) {
-        alert('Please specify a parent resource first before filtering by child resource.');
-        parentInput.focus();
+        childInput.value = '';
     }
 });
+
+// Initialize disabled state
+childInput.disabled = !parentInput.value;
 </script>
 
 {% endblock %}

@@ -232,9 +232,8 @@ If you run ``datasette plugins --all`` it will include default plugins that ship
             "version": null,
             "hooks": [
                 "actor_from_request",
-                "permission_allowed",
+                "canned_queries",
                 "permission_resources_sql",
-                "register_permissions",
                 "skip_csrf"
             ]
         },

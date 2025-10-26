@@ -416,48 +416,55 @@ The method returns ``True`` if the permission is granted, ``False`` if denied.
 
 For legacy string/tuple based permission checking, use :ref:`datasette_permission_allowed` instead.
 
-.. _datasette_ensure_permissions:
+.. _datasette_ensure_permission:
 
-await .ensure_permissions(actor, permissions)
----------------------------------------------
+await .ensure_permission(action, resource=None, actor=None)
+-----------------------------------------------------------
 
-``actor`` - dictionary
+``action`` - string
+    The action to check. See :ref:`permissions` for a list of available actions.
+
+``resource`` - Resource object (optional)
+    The resource to check the permission against. Must be an instance of ``InstanceResource``, ``DatabaseResource``, or ``TableResource`` from the ``datasette.resources`` module. If omitted, defaults to ``InstanceResource()`` for instance-level permissions.
+
+``actor`` - dictionary (optional)
     The authenticated actor. This is usually ``request.actor``.
 
-``permissions`` - list
-    A list of permissions to check. Each permission in that list can be a string ``action`` name or a 2-tuple of ``(action, resource)``.
+This is a convenience wrapper around :ref:`datasette_allowed` that raises a ``datasette.Forbidden`` exception if the permission check fails. Use this when you want to enforce a permission check and halt execution if the actor is not authorized.
 
-This method allows multiple permissions to be checked at once. It raises a ``datasette.Forbidden`` exception if any of the checks are denied before one of them is explicitly granted.
-
-This is useful when you need to check multiple permissions at once. For example, an actor should be able to view a table if either one of the following checks returns ``True`` or not a single one of them returns ``False``:
+Example:
 
 .. code-block:: python
 
-    await datasette.ensure_permissions(
-        request.actor,
-        [
-            ("view-table", (database, table)),
-            ("view-database", database),
-            "view-instance",
-        ],
+    from datasette.resources import TableResource
+
+    # Will raise Forbidden if actor cannot view the table
+    await datasette.ensure_permission(
+        action="view-table",
+        resource=TableResource(
+            database="fixtures", table="cities"
+        ),
+        actor=request.actor,
+    )
+
+    # For instance-level actions, resource can be omitted:
+    await datasette.ensure_permission(
+        action="permissions-debug", actor=request.actor
     )
 
 .. _datasette_check_visibility:
 
-await .check_visibility(actor, action=None, resource=None, permissions=None)
-----------------------------------------------------------------------------
+await .check_visibility(actor, action, resource=None)
+-----------------------------------------------------
 
 ``actor`` - dictionary
     The authenticated actor. This is usually ``request.actor``.
 
-``action`` - string, optional
+``action`` - string
     The name of the action that is being permission checked.
 
-``resource`` - string or tuple, optional
-    The resource, e.g. the name of the database, or a tuple of two strings containing the name of the database and the name of the table. Only some permissions apply to a resource.
-
-``permissions`` - list of ``action`` strings or ``(action, resource)`` tuples, optional
-    Provide this instead of ``action`` and ``resource`` to check multiple permissions at once.
+``resource`` - Resource object, optional
+    The resource being checked, as a Resource object such as ``DatabaseResource(database=...)``, ``TableResource(database=..., table=...)``, or ``QueryResource(database=..., query=...)``. Only some permissions apply to a resource.
 
 This convenience method can be used to answer the question "should this item be considered private, in that it is visible to me but it is not visible to anonymous users?"
 
@@ -467,23 +474,12 @@ This example checks if the user can access a specific table, and sets ``private`
 
 .. code-block:: python
 
+    from datasette.resources import TableResource
+
     visible, private = await datasette.check_visibility(
         request.actor,
         action="view-table",
-        resource=(database, table),
-    )
-
-The following example runs three checks in a row, similar to :ref:`datasette_ensure_permissions`. If any of the checks are denied before one of them is explicitly granted then ``visible`` will be ``False``. ``private`` will be ``True`` if an anonymous user would not be able to view the resource.
-
-.. code-block:: python
-
-    visible, private = await datasette.check_visibility(
-        request.actor,
-        permissions=[
-            ("view-table", (database, table)),
-            ("view-database", database),
-            "view-instance",
-        ],
+        resource=TableResource(database=database, table=table),
     )
 
 .. _datasette_create_token:
@@ -1051,7 +1047,7 @@ These methods each return a ``datasette.utils.PrefixedUrlString`` object, which 
 .. _internals_permission_classes:
 
 Permission classes and utilities
-=================================
+================================
 
 .. _internals_permission_sql:
 
@@ -1300,7 +1296,7 @@ Example usage:
 .. _database_execute_write:
 
 await db.execute_write(sql, params=None, block=True)
------------------------------------------------------
+----------------------------------------------------
 
 SQLite only allows one database connection to write at a time. Datasette handles this for you by maintaining a queue of writes to be executed against a given database. Plugins can submit write operations to this queue and they will be executed in the order in which they are received.
 
@@ -1317,7 +1313,7 @@ Each call to ``execute_write()`` will be executed inside a transaction.
 .. _database_execute_write_script:
 
 await db.execute_write_script(sql, block=True)
------------------------------------------------
+----------------------------------------------
 
 Like ``execute_write()`` but can be used to send multiple SQL statements in a single string separated by semicolons, using the ``sqlite3`` `conn.executescript() <https://docs.python.org/3/library/sqlite3.html#sqlite3.Cursor.executescript>`__ method.
 
@@ -1326,7 +1322,7 @@ Each call to ``execute_write_script()`` will be executed inside a transaction.
 .. _database_execute_write_many:
 
 await db.execute_write_many(sql, params_seq, block=True)
----------------------------------------------------------
+--------------------------------------------------------
 
 Like ``execute_write()`` but uses the ``sqlite3`` `conn.executemany() <https://docs.python.org/3/library/sqlite3.html#sqlite3.Cursor.executemany>`__ method. This will efficiently execute the same SQL statement against each of the parameters in the ``params_seq`` iterator, for example:
 

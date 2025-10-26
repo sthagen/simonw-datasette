@@ -1,4 +1,4 @@
-from datasette import hookimpl, Permission
+from datasette import hookimpl
 from datasette.permissions import PermissionSQL
 from datasette.utils import actor_matches_allow
 import itsdangerous
@@ -6,205 +6,15 @@ import time
 
 
 @hookimpl
-def register_permissions():
-    return (
-        Permission(
-            name="view-instance",
-            abbr="vi",
-            description="View Datasette instance",
-            takes_database=False,
-            takes_resource=False,
-            default=True,
-        ),
-        Permission(
-            name="view-database",
-            abbr="vd",
-            description="View database",
-            takes_database=True,
-            takes_resource=False,
-            default=True,
-            implies_can_view=True,
-        ),
-        Permission(
-            name="view-database-download",
-            abbr="vdd",
-            description="Download database file",
-            takes_database=True,
-            takes_resource=False,
-            default=True,
-        ),
-        Permission(
-            name="view-table",
-            abbr="vt",
-            description="View table",
-            takes_database=True,
-            takes_resource=True,
-            default=True,
-            implies_can_view=True,
-        ),
-        Permission(
-            name="view-query",
-            abbr="vq",
-            description="View named query results",
-            takes_database=True,
-            takes_resource=True,
-            default=True,
-            implies_can_view=True,
-        ),
-        Permission(
-            name="execute-sql",
-            abbr="es",
-            description="Execute read-only SQL queries",
-            takes_database=True,
-            takes_resource=False,
-            default=True,
-            implies_can_view=True,
-        ),
-        Permission(
-            name="permissions-debug",
-            abbr="pd",
-            description="Access permission debug tool",
-            takes_database=False,
-            takes_resource=False,
-            default=False,
-        ),
-        Permission(
-            name="debug-menu",
-            abbr="dm",
-            description="View debug menu items",
-            takes_database=False,
-            takes_resource=False,
-            default=False,
-        ),
-        Permission(
-            name="insert-row",
-            abbr="ir",
-            description="Insert rows",
-            takes_database=True,
-            takes_resource=True,
-            default=False,
-        ),
-        Permission(
-            name="delete-row",
-            abbr="dr",
-            description="Delete rows",
-            takes_database=True,
-            takes_resource=True,
-            default=False,
-        ),
-        Permission(
-            name="update-row",
-            abbr="ur",
-            description="Update rows",
-            takes_database=True,
-            takes_resource=True,
-            default=False,
-        ),
-        Permission(
-            name="create-table",
-            abbr="ct",
-            description="Create tables",
-            takes_database=True,
-            takes_resource=False,
-            default=False,
-        ),
-        Permission(
-            name="alter-table",
-            abbr="at",
-            description="Alter tables",
-            takes_database=True,
-            takes_resource=True,
-            default=False,
-        ),
-        Permission(
-            name="drop-table",
-            abbr="dt",
-            description="Drop tables",
-            takes_database=True,
-            takes_resource=True,
-            default=False,
-        ),
-    )
-
-
-@hookimpl(tryfirst=True, specname="permission_allowed")
-async def permission_allowed_sql_bridge(datasette, actor, action, resource):
-    """
-    Bridge config-based permission rules to the old permission_allowed API.
-
-    This allows views using the old string/tuple resource API to benefit from
-    config blocks defined in datasette.yaml without using the new resource-based system.
-
-    Note: This does NOT apply default allow rules - those should come from the
-    Permission object's default value to maintain backward compatibility.
-    """
-    # Only check config-based rules - don't apply defaults
-    config_rules = await _config_permission_rules(datasette, actor, action)
-    if not config_rules:
-        return None
-
-    # Evaluate config rules for this specific resource
-    for rule in config_rules:
-        if rule.params:  # Has config-based rules
-            from datasette.utils.permissions import resolve_permissions_with_candidates
-
-            # Build candidate based on resource
-            if resource is None:
-                candidates = [(None, None)]
-            elif isinstance(resource, str):
-                candidates = [(resource, None)]
-            elif isinstance(resource, tuple):
-                candidates = [(resource[0], resource[1])]
-            else:
-                return None
-
-            db = datasette.get_internal_database()
-            results = await resolve_permissions_with_candidates(
-                db, actor, [rule], candidates, action, implicit_deny=False
-            )
-            if results:
-                # Use the first result's allow value
-                for result in results:
-                    if result.get("allow") is not None:
-                        return bool(result["allow"])
-    return None
-
-
-@hookimpl(tryfirst=True, specname="permission_allowed")
-def permission_allowed_default_allow_sql(datasette, actor, action, resource):
-    """
-    Enforce the default_allow_sql setting for execute-sql permission.
-
-    When default_allow_sql is set to False, deny all execute-sql permissions.
-    This runs before other permission checks to ensure the setting is respected.
-    """
-    if action == "execute-sql":
-        if not datasette.setting("default_allow_sql"):
-            return False
-    return None
-
-
-@hookimpl(tryfirst=True, specname="permission_allowed")
-def permission_allowed_root(datasette, actor, action, resource):
-    """
-    Grant all permissions to root user when Datasette started with --root flag.
-
-    The --root flag is a localhost development tool. When used, it sets
-    datasette.root_enabled = True and creates an actor with id="root".
-    This hook grants that actor all permissions.
-
-    Other plugins can use the same pattern: check datasette.root_enabled
-    to decide whether to honor root users.
-    """
-    if datasette.root_enabled and actor and actor.get("id") == "root":
-        return True
-    return None
-
-
-@hookimpl
 async def permission_resources_sql(datasette, actor, action):
     rules: list[PermissionSQL] = []
 
+    # 1. FIRST: Actor restrictions (if present)
+    # These act as a gating filter - must pass through before other checks
+    restriction_rules = await _restriction_permission_rules(datasette, actor, action)
+    rules.extend(restriction_rules)
+
+    # 2. Root user permissions
     # Root user with root_enabled gets all permissions at global level
     # Config rules at more specific levels (database/table) can still override
     if datasette.root_enabled and actor and actor.get("id") == "root":
@@ -220,10 +30,11 @@ async def permission_resources_sql(datasette, actor, action):
             )
         )
 
+    # 3. Config-based permission rules
     config_rules = await _config_permission_rules(datasette, actor, action)
     rules.extend(config_rules)
 
-    # Check default_allow_sql setting for execute-sql action
+    # 4. Check default_allow_sql setting for execute-sql action
     if action == "execute-sql" and not datasette.setting("default_allow_sql"):
         # Return a deny rule for all databases
         sql = "SELECT NULL AS parent, NULL AS child, 0 AS allow, 'default_allow_sql is false' AS reason"
@@ -241,24 +52,31 @@ async def permission_resources_sql(datasette, actor, action):
             return rules[0]
         return rules
 
-    default_allow_actions = {
-        "view-instance",
-        "view-database",
-        "view-table",
-        "execute-sql",
-    }
-    if action in default_allow_actions:
-        reason = f"default allow for {action}".replace("'", "''")
-        sql = (
-            "SELECT NULL AS parent, NULL AS child, 1 AS allow, " f"'{reason}' AS reason"
-        )
-        rules.append(
-            PermissionSQL(
-                source="default_permissions",
-                sql=sql,
-                params={},
+    # 5. Default allow actions (ONLY if no restrictions)
+    # If actor has restrictions, they've already added their own deny/allow rules
+    has_restrictions = actor and "_r" in actor
+    if not has_restrictions:
+        default_allow_actions = {
+            "view-instance",
+            "view-database",
+            "view-database-download",
+            "view-table",
+            "view-query",
+            "execute-sql",
+        }
+        if action in default_allow_actions:
+            reason = f"default allow for {action}".replace("'", "''")
+            sql = (
+                "SELECT NULL AS parent, NULL AS child, 1 AS allow, "
+                f"'{reason}' AS reason"
             )
-        )
+            rules.append(
+                PermissionSQL(
+                    source="default_permissions",
+                    sql=sql,
+                    params={},
+                )
+            )
 
     if not rules:
         return None
@@ -283,6 +101,39 @@ async def _config_permission_rules(datasette, actor, action) -> list[PermissionS
             return None
         return actor_matches_allow(actor_dict, allow_block)
 
+    # Check if actor has restrictions - if so, we'll filter config rules
+    has_restrictions = actor_dict and "_r" in actor_dict if actor_dict else False
+    restrictions = actor_dict.get("_r", {}) if actor_dict else {}
+
+    def is_in_restriction_allowlist(parent, child, action):
+        """Check if a resource is in the actor's restriction allowlist for this action"""
+        if not has_restrictions:
+            return True  # No restrictions, all resources allowed
+
+        # Check action with abbreviations
+        action_obj = datasette.actions.get(action)
+        action_checks = {action}
+        if action_obj and action_obj.abbr:
+            action_checks.add(action_obj.abbr)
+
+        # Check global allowlist
+        if action_checks.intersection(restrictions.get("a", [])):
+            return True
+
+        # Check database-level allowlist
+        if parent and action_checks.intersection(
+            restrictions.get("d", {}).get(parent, [])
+        ):
+            return True
+
+        # Check table-level allowlist
+        if parent and child:
+            table_actions = restrictions.get("r", {}).get(parent, {}).get(child, [])
+            if action_checks.intersection(table_actions):
+                return True
+
+        return False
+
     rows = []
 
     def add_row(parent, child, result, scope):
@@ -301,6 +152,12 @@ async def _config_permission_rules(datasette, actor, action) -> list[PermissionS
         """For 'allow' blocks, always add a row if the block exists - deny if no match"""
         if allow_block is None:
             return
+
+        # If actor has restrictions and this resource is NOT in allowlist, skip this config rule
+        # Restrictions act as a gating filter - config cannot grant access to restricted-out resources
+        if not is_in_restriction_allowlist(parent, child, action):
+            return
+
         result = evaluate(allow_block)
         # If result is None (no match) or False, treat as deny
         rows.append(
@@ -375,6 +232,13 @@ async def _config_permission_rules(datasette, actor, action) -> list[PermissionS
                 db_name, None, db_allow, f"allow for {action} on {db_name}"
             )
 
+        if action == "view-query":
+            # Database-level allow block affects all queries in that database
+            db_allow = db_config.get("allow")
+            add_row_allow_block(
+                db_name, None, db_allow, f"allow for {action} on {db_name}"
+            )
+
     # Root-level allow block applies to all view-* actions
     if action == "view-instance":
         allow_block = config.get("allow")
@@ -418,56 +282,155 @@ async def _config_permission_rules(datasette, actor, action) -> list[PermissionS
     return [PermissionSQL(source="config_permissions", sql=sql, params=params)]
 
 
+async def _restriction_permission_rules(
+    datasette, actor, action
+) -> list[PermissionSQL]:
+    """
+    Generate PermissionSQL rules from actor restrictions (_r key).
+
+    Actor restrictions define an allowlist. We implement this via:
+    1. Global DENY rule for the action (blocks everything by default)
+    2. Specific ALLOW rules for each allowlisted resource
+
+    The cascading logic (child → parent → global) ensures that:
+    - Allowlisted resources at child/parent level override global deny
+    - Non-allowlisted resources are blocked by global deny
+
+    This creates a gating filter that runs BEFORE normal permission checks.
+    Restrictions cannot be overridden by config - they gate what gets checked.
+    """
+    if not actor or "_r" not in actor:
+        return []
+
+    restrictions = actor["_r"]
+
+    # Check if this action appears in restrictions (with abbreviations)
+    action_obj = datasette.actions.get(action)
+    action_checks = {action}
+    if action_obj and action_obj.abbr:
+        action_checks.add(action_obj.abbr)
+
+    # Check if this action is in the allowlist anywhere in restrictions
+    is_in_allowlist = False
+    global_actions = restrictions.get("a", [])
+    if action_checks.intersection(global_actions):
+        is_in_allowlist = True
+
+    if not is_in_allowlist:
+        for db_actions in restrictions.get("d", {}).values():
+            if action_checks.intersection(db_actions):
+                is_in_allowlist = True
+                break
+
+    if not is_in_allowlist:
+        for tables in restrictions.get("r", {}).values():
+            for table_actions in tables.values():
+                if action_checks.intersection(table_actions):
+                    is_in_allowlist = True
+                    break
+            if is_in_allowlist:
+                break
+
+    # If action not in allowlist at all, add global deny and return
+    if not is_in_allowlist:
+        sql = "SELECT NULL AS parent, NULL AS child, 0 AS allow, :deny_reason AS reason"
+        return [
+            PermissionSQL(
+                source="actor_restrictions",
+                sql=sql,
+                params={
+                    "deny_reason": f"actor restrictions: {action} not in allowlist"
+                },
+            )
+        ]
+
+    # Action IS in allowlist - build deny + specific allows
+    selects = []
+    params = {}
+    param_counter = 0
+
+    def add_row(parent, child, allow, reason):
+        """Helper to add a parameterized SELECT statement"""
+        nonlocal param_counter
+        prefix = f"restr_{param_counter}"
+        param_counter += 1
+
+        selects.append(
+            f"SELECT :{prefix}_parent AS parent, :{prefix}_child AS child, "
+            f":{prefix}_allow AS allow, :{prefix}_reason AS reason"
+        )
+        params[f"{prefix}_parent"] = parent
+        params[f"{prefix}_child"] = child
+        params[f"{prefix}_allow"] = 1 if allow else 0
+        params[f"{prefix}_reason"] = reason
+
+    # If NOT globally allowed, add global deny as gatekeeper
+    is_globally_allowed = action_checks.intersection(global_actions)
+    if not is_globally_allowed:
+        add_row(None, None, 0, f"actor restrictions: {action} denied by default")
+    else:
+        # Globally allowed - add global allow
+        add_row(None, None, 1, f"actor restrictions: global {action}")
+
+    # Add database-level allows
+    db_restrictions = restrictions.get("d", {})
+    for db_name, db_actions in db_restrictions.items():
+        if action_checks.intersection(db_actions):
+            add_row(db_name, None, 1, f"actor restrictions: database {db_name}")
+
+    # Add resource/table-level allows
+    resource_restrictions = restrictions.get("r", {})
+    for db_name, tables in resource_restrictions.items():
+        for table_name, table_actions in tables.items():
+            if action_checks.intersection(table_actions):
+                add_row(
+                    db_name,
+                    table_name,
+                    1,
+                    f"actor restrictions: {db_name}/{table_name}",
+                )
+
+    if not selects:
+        return []
+
+    sql = "\nUNION ALL\n".join(selects)
+
+    return [PermissionSQL(source="actor_restrictions", sql=sql, params=params)]
+
+
 def restrictions_allow_action(
     datasette: "Datasette",
     restrictions: dict,
     action: str,
     resource: str | tuple[str, str],
 ):
-    "Do these restrictions allow the requested action against the requested resource?"
-    if action == "view-instance":
-        # Special case for view-instance: it's allowed if the restrictions include any
-        # permissions that have the implies_can_view=True flag set
-        all_rules = restrictions.get("a") or []
-        for database_rules in (restrictions.get("d") or {}).values():
-            all_rules += database_rules
-        for database_resource_rules in (restrictions.get("r") or {}).values():
-            for resource_rules in database_resource_rules.values():
-                all_rules += resource_rules
-        permissions = [datasette.get_permission(action) for action in all_rules]
-        if any(p for p in permissions if p.implies_can_view):
-            return True
+    """
+    Check if actor restrictions allow the requested action against the requested resource.
 
-    if action == "view-database":
-        # Special case for view-database: it's allowed if the restrictions include any
-        # permissions that have the implies_can_view=True flag set AND takes_database
-        all_rules = restrictions.get("a") or []
-        database_rules = list((restrictions.get("d") or {}).get(resource) or [])
-        all_rules += database_rules
-        resource_rules = ((restrictions.get("r") or {}).get(resource) or {}).values()
-        for resource_rules in (restrictions.get("r") or {}).values():
-            for table_rules in resource_rules.values():
-                all_rules += table_rules
-        permissions = [datasette.get_permission(action) for action in all_rules]
-        if any(p for p in permissions if p.implies_can_view and p.takes_database):
-            return True
-
+    Restrictions work on an exact-match basis: if an actor has view-table permission,
+    they can view tables, but NOT automatically view-instance or view-database.
+    Each permission is checked independently without implication logic.
+    """
     # Does this action have an abbreviation?
     to_check = {action}
-    permission = datasette.permissions.get(action)
-    if permission and permission.abbr:
-        to_check.add(permission.abbr)
+    action_obj = datasette.actions.get(action)
+    if action_obj and action_obj.abbr:
+        to_check.add(action_obj.abbr)
 
-    # If restrictions is defined then we use those to further restrict the actor
-    # Crucially, we only use this to say NO (return False) - we never
-    # use it to return YES (True) because that might over-ride other
-    # restrictions placed on this actor
+    # Check if restrictions explicitly allow this action
+    # Restrictions can be at three levels:
+    # - "a": global (any resource)
+    # - "d": per-database
+    # - "r": per-table/resource
+
+    # Check global level (any resource)
     all_allowed = restrictions.get("a")
     if all_allowed is not None:
         assert isinstance(all_allowed, list)
         if to_check.intersection(all_allowed):
             return True
-    # How about for the current database?
+
+    # Check database level
     if resource:
         if isinstance(resource, str):
             database_name = resource
@@ -478,34 +441,18 @@ def restrictions_allow_action(
             assert isinstance(database_allowed, list)
             if to_check.intersection(database_allowed):
                 return True
-    # Or the current table? That's any time the resource is (database, table)
+
+    # Check table/resource level
     if resource is not None and not isinstance(resource, str) and len(resource) == 2:
         database, table = resource
         table_allowed = restrictions.get("r", {}).get(database, {}).get(table)
-        # TODO: What should this do for canned queries?
         if table_allowed is not None:
             assert isinstance(table_allowed, list)
             if to_check.intersection(table_allowed):
                 return True
 
-    # This action is not specifically allowed, so reject it
+    # This action is not explicitly allowed, so reject it
     return False
-
-
-@hookimpl(specname="permission_allowed")
-def permission_allowed_actor_restrictions(datasette, actor, action, resource):
-    if actor is None:
-        return None
-    if "_r" not in actor:
-        # No restrictions, so we have no opinion
-        return None
-    _r = actor.get("_r")
-    if restrictions_allow_action(datasette, _r, action, resource):
-        # Return None because we do not have an opinion here
-        return None
-    else:
-        # Block this permission check
-        return False
 
 
 @hookimpl
@@ -563,3 +510,12 @@ def skip_csrf(scope):
         headers = scope.get("headers") or {}
         if dict(headers).get(b"content-type") == b"application/json":
             return True
+
+
+@hookimpl
+def canned_queries(datasette, database, actor):
+    """Return canned queries from datasette configuration."""
+    queries = (
+        ((datasette.config or {}).get("databases") or {}).get(database) or {}
+    ).get("queries") or {}
+    return queries
