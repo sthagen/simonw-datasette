@@ -4,6 +4,60 @@
 Changelog
 =========
 
+.. _v1_0_a20:
+
+UNRELEASED 1.0a20 (2025-??-??)
+------------------------------
+
+This alpha introduces a major breaking change prior to the 1.0 release of Datasette concerning Datasette's permission system.
+
+Permission system redesign
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Previously the permission system worked using ``datasette.permission_allowed()`` checks which consulted all available plugins in turn to determine whether a given actor was allowed to perform a given action on a given resource.
+
+This approach could become prohibitively expensive for large lists of items - for example to determine the list of tables that a user could view in a large Datasette instance, where the plugin hooks would be called N times for N tables.
+
+The new system instead uses SQL queries against Datasette's internal :ref:`catalog tables <internals_internal>` to derive the list of resources for which an actor has permission for a given action.
+
+Plugins can use the new :ref:`plugin_hook_permission_resources_sql` hook to return SQL fragments which will influence the construction of that query.
+
+Affected plugins should make the following changes:
+
+- Replace calls to ``datasette.permission_allowed()`` with calls to the new :ref:`datasette.allowed() <datasette_allowed>` method. The new method takes a ``resource=`` parameter which should be an instance of a ``Resource`` subclass, as described in the method documentation.
+- The ``permission_allowed()`` plugin hook has been removed in favor of the new :ref:`permission_resources_sql() <plugin_hook_permission_resources_sql>` hook.
+- The ``register_permissions()`` plugin hook has been removed in favor of :ref:`register_actions() <plugin_register_actions>`.
+
+Plugins can now make use of two new internal methods to help resolve permission checks:
+
+- :ref:`datasette.allowed_resources() <datasette_allowed_resources>` returns a ``PaginatedResources`` object with a ``.resources`` list of ``Resource`` instances that an actor is allowed to access for a given action (and a ``.next`` token for pagination).
+- :ref:`datasette.allowed_resources_sql() <datasette_allowed_resources_sql>` returns the SQL and parameters that can be executed against the internal catalog tables to determine which resources an actor is allowed to access for a given action. This can be combined with further SQL to perform advanced custom filtering.
+
+Related changes:
+
+- The way ``datasette --root`` works has changed. Running Datasette with this flag now causes the root actor to pass *all* permission checks. (:issue:`2521`)
+
+- Permission debugging improvements:
+
+  - The ``/-/allowed`` endpoint shows resources the user is allowed to interact with for different actions.
+
+  - ``/-/rules`` shows the raw allow/deny rules that apply to different permission checks.
+
+  - ``/-/actions`` lists every available action.
+
+  - ``/-/check`` can be used to try out different permission checks for the current actor.
+
+Other changes
+~~~~~~~~~~~~~
+
+- The internal ``catalog_views`` table now tracks SQLite views alongside tables in the introspection database. (:issue:`2495`)
+
+- Hitting the ``/`` brings up a search interface for navigating to tables that the current user can view. A new ``/-/tables`` endpoint supports this functionality. (:issue:`2523`)
+
+- Datasette attempts to detect some configuration errors on startup.
+
+- Datasette now supports Python 3.14 and no longer tests against Python 3.9.
+
 .. _v1_0_a19:
 
 1.0a19 (2025-04-21)
@@ -468,7 +522,7 @@ The third Datasette 1.0 alpha release adds upsert support to the JSON API, plus 
 See `Datasette 1.0a2: Upserts and finely grained permissions <https://simonwillison.net/2022/Dec/15/datasette-1a2/>`__ for an extended, annotated version of these release notes.
 
 - New ``/db/table/-/upsert`` API, :ref:`documented here <TableUpsertView>`. upsert is an update-or-insert: existing rows will have specified keys updated, but if no row matches the incoming primary key a brand new row will be inserted instead. (:issue:`1878`)
-- New :ref:`plugin_register_permissions` plugin hook. Plugins can now register named permissions, which will then be listed in various interfaces that show available permissions. (:issue:`1940`)
+- New ``register_permissions()`` plugin hook. Plugins can now register named permissions, which will then be listed in various interfaces that show available permissions. (:issue:`1940`)
 - The ``/db/-/create`` API for :ref:`creating a table <TableCreateView>` now accepts ``"ignore": true`` and ``"replace": true`` options when called with the ``"rows"`` property that creates a new table based on an example set of rows. This means the API can be called multiple times with different rows, setting rules for what should happen if a primary key collides with an existing row. (:issue:`1927`)
 - Arbitrary permissions can now be configured at the instance, database and resource (table, SQL view or canned query) level in Datasette's :ref:`metadata` JSON and YAML files. The new ``"permissions"`` key can be used to specify which actors should have which permissions. See :ref:`authentication_permissions_other` for details. (:issue:`1636`)
 - The ``/-/create-token`` page can now be used to create API tokens which are restricted to just a subset of actions, including against specific databases or resources. See :ref:`CreateTokenView` for details. (:issue:`1947`)

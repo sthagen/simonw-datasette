@@ -2,9 +2,9 @@
 Tests for the new Resource-based permission system.
 
 These tests verify:
-1. The new Datasette.allowed_resources() method
+1. The new Datasette.allowed_resources() method (with pagination)
 2. The new Datasette.allowed() method
-3. The new Datasette.allowed_resources_with_reasons() method
+3. The include_reasons parameter for debugging
 4. That SQL does the heavy lifting (no Python filtering)
 """
 
@@ -71,7 +71,8 @@ async def test_allowed_resources_global_allow(test_ds):
 
     try:
         # Use the new allowed_resources() method
-        tables = await test_ds.allowed_resources("view-table", {"id": "alice"})
+        result = await test_ds.allowed_resources("view-table", {"id": "alice"})
+        tables = result.resources
 
         # Alice should see all tables
         assert len(tables) == 5
@@ -133,9 +134,7 @@ async def test_allowed_specific_resource(test_ds):
 
 
 @pytest.mark.asyncio
-async def test_allowed_resources_with_reasons(test_ds):
-    """Test allowed_resources_with_reasons() exposes debugging info"""
-
+async def test_allowed_resources_include_reasons(test_ds):
     def rules_callback(datasette, actor, action):
         if actor and actor.get("role") == "analyst":
             sql = """
@@ -152,21 +151,22 @@ async def test_allowed_resources_with_reasons(test_ds):
     pm.register(plugin, name="test_plugin")
 
     try:
-        # Use allowed_resources_with_reasons to get debugging info
-        allowed = await test_ds.allowed_resources_with_reasons(
-            "view-table", {"id": "bob", "role": "analyst"}
+        # Use allowed_resources with include_reasons to get debugging info
+        result = await test_ds.allowed_resources(
+            "view-table", {"id": "bob", "role": "analyst"}, include_reasons=True
         )
+        allowed = result.resources
 
         # Should get analytics tables except sensitive
         assert len(allowed) >= 2  # At least users and events
 
         # Check we can access both resource and reason
-        for item in allowed:
-            assert isinstance(item.resource, TableResource)
-            assert isinstance(item.reason, list)
-            if item.resource.parent == "analytics":
+        for resource in allowed:
+            assert isinstance(resource, TableResource)
+            assert isinstance(resource.reasons, list)
+            if resource.parent == "analytics":
                 # Should mention parent-level reason in at least one of the reasons
-                reasons_text = " ".join(item.reason).lower()
+                reasons_text = " ".join(resource.reasons).lower()
                 assert "analyst access" in reasons_text
 
     finally:
@@ -194,7 +194,8 @@ async def test_child_deny_overrides_parent_allow(test_ds):
 
     try:
         actor = {"id": "bob", "role": "analyst"}
-        tables = await test_ds.allowed_resources("view-table", actor)
+        result = await test_ds.allowed_resources("view-table", actor)
+        tables = result.resources
 
         # Should see analytics tables except sensitive
         analytics_tables = [t for t in tables if t.parent == "analytics"]
@@ -242,7 +243,8 @@ async def test_child_allow_overrides_parent_deny(test_ds):
 
     try:
         actor = {"id": "carol"}
-        tables = await test_ds.allowed_resources("view-table", actor)
+        result = await test_ds.allowed_resources("view-table", actor)
+        tables = result.resources
 
         # Should only see production.orders
         production_tables = [t for t in tables if t.parent == "production"]
@@ -305,69 +307,11 @@ async def test_sql_does_filtering_not_python(test_ds):
         )
 
         # allowed_resources() should also use SQL filtering
-        tables = await test_ds.allowed_resources("view-table", actor)
+        result = await test_ds.allowed_resources("view-table", actor)
+        tables = result.resources
         assert len(tables) == 1
         assert tables[0].parent == "analytics"
         assert tables[0].child == "users"
 
     finally:
         pm.unregister(plugin, name="test_plugin")
-
-
-@pytest.mark.asyncio
-async def test_no_permission_rules_returns_correct_schema():
-    """
-    Test that when no permission rules exist, the empty result has correct schema.
-
-    This is a regression test for a bug where the empty result returned only
-    2 columns (parent, child) instead of the documented 3 columns
-    (parent, child, reason), causing schema mismatches.
-
-    See: https://github.com/simonw/datasette/pull/2515#discussion_r2457803901
-    """
-    from datasette.utils.actions_sql import build_allowed_resources_sql
-
-    # Create a fresh datasette instance
-    ds = Datasette()
-    await ds.invoke_startup()
-
-    # Add a test database
-    db = ds.add_memory_database("testdb")
-    await db.execute_write(
-        "CREATE TABLE IF NOT EXISTS test_table (id INTEGER PRIMARY KEY)"
-    )
-    await ds._refresh_schemas()
-
-    # Temporarily unregister all permission_resources_sql providers to simulate no rules
-    hook_caller = pm.hook.permission_resources_sql
-    hookimpls = hook_caller.get_hookimpls()
-    removed_plugins = [
-        (impl.plugin_name, impl.plugin) for impl in hookimpls if impl.plugin is not None
-    ]
-
-    for plugin_name, _ in removed_plugins:
-        pm.unregister(name=plugin_name)
-
-    try:
-        # Call build_allowed_resources_sql directly which will hit the no-rules code path
-        sql, params = await build_allowed_resources_sql(
-            ds, actor={"id": "nobody"}, action="view-table"
-        )
-
-        # Execute the query to verify it has correct column structure
-        result = await ds.get_internal_database().execute(sql, params)
-
-        # Should have 3 columns: parent, child, reason
-        # This assertion would fail if the empty result only had 2 columns
-        assert (
-            len(result.columns) == 3
-        ), f"Expected 3 columns, got {len(result.columns)}: {result.columns}"
-        assert result.columns == ["parent", "child", "reason"]
-
-        # Should have no rows (no rules = no access)
-        assert len(result.rows) == 0
-
-    finally:
-        # Restore original plugins in the order they were removed
-        for plugin_name, plugin in removed_plugins:
-            pm.register(plugin, name=plugin_name)

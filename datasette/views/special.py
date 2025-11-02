@@ -1,7 +1,7 @@
 import json
 import logging
 from datasette.events import LogoutEvent, LoginEvent, CreateTokenEvent
-from datasette.resources import DatabaseResource, TableResource, InstanceResource
+from datasette.resources import DatabaseResource, TableResource
 from datasette.utils.asgi import Response, Forbidden
 from datasette.utils import (
     actor_matches_allow,
@@ -268,19 +268,38 @@ class AllowedResourcesView(BaseView):
         offset = (page - 1) * page_size
 
         # Use the simplified allowed_resources method
-        # If user has debug permission, use the with_reasons variant
+        # Collect all resources with optional reasons for debugging
         try:
-            if has_debug_permission:
-                allowed_resources = await self.ds.allowed_resources_with_reasons(
-                    action=action,
-                    actor=actor,
-                )
-            else:
-                allowed_resources = await self.ds.allowed_resources(
-                    action=action,
-                    actor=actor,
-                    parent=parent_filter,
-                )
+            allowed_rows = []
+            result = await self.ds.allowed_resources(
+                action=action,
+                actor=actor,
+                parent=parent_filter,
+                include_reasons=has_debug_permission,
+            )
+            async for resource in result.all():
+                parent_val = resource.parent
+                child_val = resource.child
+
+                # Build resource path
+                if parent_val is None:
+                    resource_path = "/"
+                elif child_val is None:
+                    resource_path = f"/{parent_val}"
+                else:
+                    resource_path = f"/{parent_val}/{child_val}"
+
+                row = {
+                    "parent": parent_val,
+                    "child": child_val,
+                    "resource": resource_path,
+                }
+
+                # Add reason if we have it (from include_reasons=True)
+                if has_debug_permission and hasattr(resource, "reasons"):
+                    row["reason"] = resource.reasons
+
+                allowed_rows.append(row)
         except Exception:
             # If catalog tables don't exist yet, return empty results
             return (
@@ -294,46 +313,6 @@ class AllowedResourcesView(BaseView):
                 },
                 200,
             )
-
-        # Convert to list of dicts with resource path
-        allowed_rows = []
-        for item in allowed_resources:
-            # Extract resource and reason depending on what we got back
-            if has_debug_permission:
-                # allowed_resources_with_reasons returns AllowedResource(resource, reason)
-                resource = item.resource
-                reason = item.reason
-            else:
-                # allowed_resources returns plain Resource objects
-                resource = item
-                reason = None
-
-            parent_val = resource.parent
-            child_val = resource.child
-
-            # Apply parent filter if needed (when using with_reasons, we need to filter manually)
-            if parent_filter is not None and parent_val != parent_filter:
-                continue
-
-            # Build resource path
-            if parent_val is None:
-                resource_path = "/"
-            elif child_val is None:
-                resource_path = f"/{parent_val}"
-            else:
-                resource_path = f"/{parent_val}/{child_val}"
-
-            row = {
-                "parent": parent_val,
-                "child": child_val,
-                "resource": resource_path,
-            }
-
-            # Add reason if we have it (it's already a list from allowed_resources_with_reasons)
-            if reason is not None:
-                row["reason"] = reason
-
-            allowed_rows.append(row)
 
         # Apply child filter if specified
         if child_filter is not None:
@@ -512,12 +491,18 @@ async def _check_permission_for_actor(ds, action, parent, child, actor):
     if not action_obj:
         return {"error": f"Unknown action: {action}"}, 400
 
-    if action_obj.takes_parent and action_obj.takes_child:
+    # Global actions (no resource_class) don't have a resource
+    if action_obj.resource_class is None:
+        resource_obj = None
+    elif action_obj.takes_parent and action_obj.takes_child:
+        # Child-level resource (e.g., TableResource, QueryResource)
         resource_obj = action_obj.resource_class(database=parent, table=child)
     elif action_obj.takes_parent:
+        # Parent-level resource (e.g., DatabaseResource)
         resource_obj = action_obj.resource_class(database=parent)
     else:
-        resource_obj = action_obj.resource_class()
+        # This shouldn't happen given validation in Action.__post_init__
+        return {"error": f"Invalid action configuration: {action}"}, 500
 
     allowed = await ds.allowed(action=action, resource=resource_obj, actor=actor)
 
@@ -652,10 +637,11 @@ class CreateTokenView(BaseView):
     async def shared(self, request):
         self.check_permission(request)
         # Build list of databases and tables the user has permission to view
-        allowed_databases = await self.ds.allowed_resources(
-            "view-database", request.actor
-        )
-        allowed_tables = await self.ds.allowed_resources("view-table", request.actor)
+        db_page = await self.ds.allowed_resources("view-database", request.actor)
+        allowed_databases = [r async for r in db_page.all()]
+
+        table_page = await self.ds.allowed_resources("view-table", request.actor)
+        allowed_tables = [r async for r in table_page.all()]
 
         # Build database -> tables mapping
         database_with_tables = []

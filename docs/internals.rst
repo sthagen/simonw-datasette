@@ -272,14 +272,14 @@ The dictionary keys are the name of the database that is used in the URL - e.g. 
 
 All databases are listed, irrespective of user permissions.
 
-.. _datasette_permissions:
+.. _datasette_actions:
 
-.permissions
-------------
+.actions
+--------
 
-Property exposing a dictionary of permissions that have been registered using the :ref:`plugin_register_permissions` plugin hook.
+Property exposing a dictionary of actions that have been registered using the :ref:`plugin_register_actions` plugin hook.
 
-The dictionary keys are the permission names - e.g. ``view-instance`` - and the values are ``Permission()`` objects describing the permission. Here is a :ref:`description of that object <plugin_register_permissions>`.
+The dictionary keys are the action names - e.g. ``view-instance`` - and the values are ``Action()`` objects describing the permission.
 
 .. _datasette_plugin_config:
 
@@ -387,39 +387,87 @@ The method returns ``True`` if the permission is granted, ``False`` if denied.
 
 .. _datasette_allowed_resources:
 
-await .allowed_resources(action, actor=None, \*, parent=None, include_is_private=False)
----------------------------------------------------------------------------------------
+await .allowed_resources(action, actor=None, \*, parent=None, include_is_private=False, include_reasons=False, limit=100, next=None)
+------------------------------------------------------------------------------------------------------------------------------------
 
-Returns a list of ``Resource`` objects that the actor can access for the
-specified action. Each returned object is an instance of the action's
-``resource_class`` and may include a ``.private`` attribute (when
-``include_is_private=True``) to indicate that anonymous actors would be denied
-access.
+Returns a ``PaginatedResources`` object containing resources that the actor can access for the specified action, with support for keyset pagination.
 
-Example::
+``action`` - string
+    The action name (e.g., "view-table", "view-database")
 
-    tables = await datasette.allowed_resources(
-        "view-table", actor=request.actor, parent="fixtures"
+``actor`` - dictionary, optional
+    The authenticated actor. Defaults to ``None`` for unauthenticated requests.
+
+``parent`` - string, optional
+    Optional parent filter (e.g., database name) to limit results
+
+``include_is_private`` - boolean, optional
+    If True, adds a ``.private`` attribute to each Resource indicating whether anonymous users can access it
+
+``include_reasons`` - boolean, optional
+    If True, adds a ``.reasons`` attribute with a list of strings describing why access was granted (useful for debugging)
+
+``limit`` - integer, optional
+    Maximum number of results to return per page (1-1000, default 100)
+
+``next`` - string, optional
+    Keyset token from a previous page for pagination
+
+The method returns a ``PaginatedResources`` object (from ``datasette.utils``) with the following attributes:
+
+``resources`` - list
+    List of ``Resource`` objects for the current page
+
+``next`` - string or None
+    Token for the next page, or ``None`` if no more results exist
+
+Example usage:
+
+.. code-block:: python
+
+    # Get first page of tables
+    page = await datasette.allowed_resources(
+        "view-table",
+        actor=request.actor,
+        parent="fixtures",
+        limit=50,
     )
-    for table in tables:
+
+    for table in page.resources:
+        print(table.parent, table.child)
+        if hasattr(table, "private"):
+            print(f"  Private: {table.private}")
+
+    # Get next page if available
+    if page.next:
+        next_page = await datasette.allowed_resources(
+            "view-table", actor=request.actor, next=page.next
+        )
+
+    # Iterate through all results automatically
+    page = await datasette.allowed_resources(
+        "view-table", actor=request.actor
+    )
+    async for table in page.all():
         print(table.parent, table.child)
 
-This method uses :ref:`datasette_allowed_resources_sql` under the hood and is an
-efficient way to list the databases, tables or queries visible to a user.
+    # With reasons for debugging
+    page = await datasette.allowed_resources(
+        "view-table", actor=request.actor, include_reasons=True
+    )
+    for table in page.resources:
+        print(f"{table.child}: {table.reasons}")
 
-.. _datasette_allowed_resources_with_reasons:
+The ``page.all()`` async generator automatically handles pagination, fetching additional pages and yielding all resources one at a time.
 
-await .allowed_resources_with_reasons(action, actor=None)
----------------------------------------------------------
-
-Returns a list of :class:`datasette.permissions.AllowedResource` tuples. Each tuple contains a ``Resource`` plus a list of strings describing the rules that granted access. This powers the debugging data shown by the ``/-/allowed`` endpoint and is helpful when building administrative tooling that needs to show why access was granted.
+This method uses :ref:`datasette_allowed_resources_sql` under the hood and is an efficient way to list the databases, tables or other resources that an actor can access for a specific action.
 
 .. _datasette_allowed_resources_sql:
 
 await .allowed_resources_sql(\*, action, actor=None, parent=None, include_is_private=False)
 -------------------------------------------------------------------------------------------
 
-Builds the SQL query that Datasette uses to determine which resources an actor may access for a specific action. Returns a ``(sql: str, params: dict)`` tuple that can be executed against the internal ``catalog_*`` database tables. ``parent`` can be used to limit results to a specific database, and ``include_is_private`` adds a column indicating whether anonymous users would be denied access to that resource.
+Builds the SQL query that Datasette uses to determine which resources an actor may access for a specific action. Returns a ``(sql: str, params: dict)`` namedtuple that can be executed against the internal ``catalog_*`` database tables. ``parent`` can be used to limit results to a specific database, and ``include_is_private`` adds a column indicating whether anonymous users would be denied access to that resource.
 
 Plugins that need to execute custom analysis over the raw allow/deny rules can use this helper to run the same query that powers the ``/-/allowed`` debugging interface.
 
@@ -545,16 +593,6 @@ The following example creates a token that can access ``view-instance`` and ``vi
             }
         },
     )
-
-.. _datasette_get_permission:
-
-.get_permission(name_or_abbr)
------------------------------
-
-``name_or_abbr`` - string
-    The name or abbreviation of the permission to look up, e.g. ``view-table`` or ``vt``.
-
-Returns a :ref:`Permission object <plugin_register_permissions>` representing the permission, or raises a ``KeyError`` if one is not found.
 
 .. _datasette_get_database:
 

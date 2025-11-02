@@ -71,6 +71,7 @@ from .url_builder import Urls
 from .database import Database, QueryInterrupted
 
 from .utils import (
+    PaginatedResources,
     PrefixedUrlString,
     SPATIALITE_FUNCTIONS,
     StartupError,
@@ -91,6 +92,7 @@ from .utils import (
     resolve_env_secrets,
     resolve_routes,
     tilde_decode,
+    tilde_encode,
     to_css_class,
     urlsafe_components,
     redact_keys,
@@ -244,6 +246,9 @@ DEFAULT_SETTINGS = {option.name: option.default for option in SETTINGS}
 FAVICON_PATH = app_root / "datasette" / "static" / "favicon.png"
 
 DEFAULT_NOT_SET = object()
+
+
+ResourcesSQL = collections.namedtuple("ResourcesSQL", ("sql", "params"))
 
 
 async def favicon(request, send):
@@ -1108,7 +1113,7 @@ class Datasette:
         actor: dict | None = None,
         parent: str | None = None,
         include_is_private: bool = False,
-    ) -> tuple[str, dict]:
+    ) -> ResourcesSQL:
         """
         Build SQL query to get all resources the actor can access for the given action.
 
@@ -1118,7 +1123,7 @@ class Datasette:
             parent: Optional parent filter (e.g., database name) to limit results
             include_is_private: If True, include is_private column showing if anonymous cannot access
 
-        Returns a tuple of (query: str, params: dict) that can be executed against the internal database.
+        Returns a namedtuple of (query: str, params: dict) that can be executed against the internal database.
         The query returns rows with (parent, child, reason) columns, plus is_private if requested.
 
         Example:
@@ -1136,9 +1141,10 @@ class Datasette:
         if not action_obj:
             raise ValueError(f"Unknown action: {action}")
 
-        return await build_allowed_resources_sql(
+        sql, params = await build_allowed_resources_sql(
             self, actor, action, parent=parent, include_is_private=include_is_private
         )
+        return ResourcesSQL(sql, params)
 
     async def allowed_resources(
         self,
@@ -1147,104 +1153,147 @@ class Datasette:
         *,
         parent: str | None = None,
         include_is_private: bool = False,
-    ) -> list["Resource"]:
+        include_reasons: bool = False,
+        limit: int = 100,
+        next: str | None = None,
+    ) -> PaginatedResources:
         """
-        Return all resources the actor can access for the given action.
+        Return paginated resources the actor can access for the given action.
 
-        Uses SQL to filter resources based on cascading permission rules.
-        Returns instances of the appropriate Resource subclass.
+        Uses SQL with keyset pagination to efficiently filter resources.
+        Returns PaginatedResources with list of Resource instances and pagination metadata.
 
         Args:
             action: The action name (e.g., "view-table")
             actor: The actor dict (or None for unauthenticated)
             parent: Optional parent filter (e.g., database name) to limit results
             include_is_private: If True, adds a .private attribute to each Resource
+            include_reasons: If True, adds a .reasons attribute with List[str] of permission reasons
+            limit: Maximum number of results to return (1-1000, default 100)
+            next: Keyset token from previous page for pagination
+
+        Returns:
+            PaginatedResources with:
+                - resources: List of Resource objects for this page
+                - next: Token for next page (None if no more results)
 
         Example:
-            # Get all tables
-            tables = await datasette.allowed_resources("view-table", actor)
-            for table in tables:
+            # Get first page of tables
+            page = await datasette.allowed_resources("view-table", actor, limit=50)
+            for table in page.resources:
                 print(f"{table.parent}/{table.child}")
 
-            # Get tables for specific database with private flag
-            tables = await datasette.allowed_resources(
-                "view-table", actor, parent="mydb", include_is_private=True
+            # Get next page
+            if page.next:
+                next_page = await datasette.allowed_resources(
+                    "view-table", actor, limit=50, next=page.next
+                )
+
+            # With reasons for debugging
+            page = await datasette.allowed_resources(
+                "view-table", actor, include_reasons=True
             )
-            for table in tables:
-                if table.private:
-                    print(f"{table.child} is private")
+            for table in page.resources:
+                print(f"{table.child}: {table.reasons}")
+
+            # Iterate through all results with async generator
+            page = await datasette.allowed_resources("view-table", actor)
+            async for table in page.all():
+                print(table.child)
         """
 
         action_obj = self.actions.get(action)
         if not action_obj:
             raise ValueError(f"Unknown action: {action}")
 
+        # Validate and cap limit
+        limit = min(max(1, limit), 1000)
+
+        # Get base SQL query
         query, params = await self.allowed_resources_sql(
             action=action,
             actor=actor,
             parent=parent,
             include_is_private=include_is_private,
         )
-        result = await self.get_internal_database().execute(query, params)
 
-        # Instantiate the appropriate Resource subclass for each row
+        # Add keyset pagination WHERE clause if next token provided
+        if next:
+            try:
+                components = urlsafe_components(next)
+                if len(components) >= 2:
+                    last_parent, last_child = components[0], components[1]
+                    # Keyset condition: (parent > last) OR (parent = last AND child > last)
+                    keyset_where = """
+                        (parent > :keyset_parent OR
+                         (parent = :keyset_parent AND child > :keyset_child))
+                    """
+                    # Wrap original query and add keyset filter
+                    query = f"SELECT * FROM ({query}) WHERE {keyset_where}"
+                    params["keyset_parent"] = last_parent
+                    params["keyset_child"] = last_child
+            except (ValueError, KeyError):
+                # Invalid token - ignore and start from beginning
+                pass
+
+        # Add LIMIT (fetch limit+1 to detect if there are more results)
+        # Note: query from allowed_resources_sql() already includes ORDER BY parent, child
+        query = f"{query} LIMIT :limit"
+        params["limit"] = limit + 1
+
+        # Execute query
+        result = await self.get_internal_database().execute(query, params)
+        rows = list(result.rows)
+
+        # Check if truncated (got more than limit rows)
+        truncated = len(rows) > limit
+        if truncated:
+            rows = rows[:limit]  # Remove the extra row
+
+        # Build Resource objects with optional attributes
         resources = []
-        for row in result.rows:
-            # row[0]=parent, row[1]=child, row[2]=reason (ignored), row[3]=is_private (if requested)
+        for row in rows:
+            # row[0]=parent, row[1]=child, row[2]=reason, row[3]=is_private (if requested)
             resource = self.resource_for_action(action, parent=row[0], child=row[1])
+
+            # Add reasons if requested
+            if include_reasons:
+                reason_json = row[2]
+                try:
+                    reasons_array = (
+                        json.loads(reason_json) if isinstance(reason_json, str) else []
+                    )
+                    resource.reasons = [r for r in reasons_array if r is not None]
+                except (json.JSONDecodeError, TypeError):
+                    resource.reasons = [reason_json] if reason_json else []
+
+            # Add private flag if requested
             if include_is_private:
                 resource.private = bool(row[3])
+
             resources.append(resource)
 
-        return resources
+        # Generate next token if there are more results
+        next_token = None
+        if truncated and resources:
+            last_resource = resources[-1]
+            # Use tilde-encoding like table pagination
+            next_token = "{},{}".format(
+                tilde_encode(str(last_resource.parent)),
+                tilde_encode(str(last_resource.child)),
+            )
 
-    async def allowed_resources_with_reasons(
-        self,
-        action: str,
-        actor: dict | None = None,
-    ) -> list["AllowedResource"]:
-        """
-        Return allowed resources with permission reasons for debugging.
-
-        Uses SQL to filter resources and includes the reason each was allowed.
-        Returns list of AllowedResource named tuples with (resource, reason).
-
-        Example:
-            debug_info = await datasette.allowed_resources_with_reasons("view-table", actor)
-            for allowed in debug_info:
-                print(f"{allowed.resource}: {allowed.reason}")
-        """
-        from datasette.permissions import AllowedResource
-
-        action_obj = self.actions.get(action)
-        if not action_obj:
-            raise ValueError(f"Unknown action: {action}")
-
-        query, params = await self.allowed_resources_sql(action=action, actor=actor)
-        result = await self.get_internal_database().execute(query, params)
-
-        resources = []
-        for row in result.rows:
-            resource = self.resource_for_action(action, parent=row[0], child=row[1])
-            reason_json = row[2]
-
-            # Parse JSON array of reasons and filter out nulls
-            try:
-                import json
-
-                reasons_array = (
-                    json.loads(reason_json) if isinstance(reason_json, str) else []
-                )
-                reasons_filtered = [r for r in reasons_array if r is not None]
-                # Store as list for multiple reasons, or keep empty list
-                reason = reasons_filtered
-            except (json.JSONDecodeError, TypeError):
-                # Fallback for backward compatibility
-                reason = [reason_json] if reason_json else []
-
-            resources.append(AllowedResource(resource=resource, reason=reason))
-
-        return resources
+        return PaginatedResources(
+            resources=resources,
+            next=next_token,
+            _datasette=self,
+            _action=action,
+            _actor=actor,
+            _parent=parent,
+            _include_is_private=include_is_private,
+            _include_reasons=include_reasons,
+            _limit=limit,
+        )
 
     async def allowed(
         self,
@@ -1259,7 +1308,7 @@ class Datasette:
         Uses SQL to check permission for a single resource without fetching all resources.
         This is efficient - it does NOT call allowed_resources() and check membership.
 
-        If resource is not provided, defaults to InstanceResource() for instance-level actions.
+        For global actions, resource should be None (or omitted).
 
         Example:
             from datasette.resources import TableResource
@@ -1269,14 +1318,12 @@ class Datasette:
                 actor=actor
             )
 
-            # For instance-level actions, resource can be omitted:
+            # For global actions, resource can be omitted:
             can_debug = await datasette.allowed(action="permissions-debug", actor=actor)
         """
         from datasette.utils.actions_sql import check_permission_for_resource
-        from datasette.resources import InstanceResource
 
-        if resource is None:
-            resource = InstanceResource()
+        # For global actions, resource remains None
 
         # Check if this action has also_requires - if so, check that action first
         action_obj = self.actions.get(action)
@@ -1289,12 +1336,16 @@ class Datasette:
             ):
                 return False
 
+        # For global actions, resource is None
+        parent = resource.parent if resource else None
+        child = resource.child if resource else None
+
         result = await check_permission_for_resource(
             datasette=self,
             actor=actor,
             action=action,
-            parent=resource.parent,
-            child=resource.child,
+            parent=parent,
+            child=child,
         )
 
         # Log the permission check for debugging
@@ -1303,8 +1354,8 @@ class Datasette:
                 when=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 actor=actor,
                 action=action,
-                parent=resource.parent,
-                child=resource.child,
+                parent=parent,
+                child=child,
                 result=result,
             )
         )
@@ -1558,7 +1609,9 @@ class Datasette:
                 "description": action.description,
                 "takes_parent": action.takes_parent,
                 "takes_child": action.takes_child,
-                "resource_class": action.resource_class.__name__,
+                "resource_class": (
+                    action.resource_class.__name__ if action.resource_class else None
+                ),
                 "also_requires": action.also_requires,
             }
             for action in sorted(self.actions.values(), key=lambda a: a.name)

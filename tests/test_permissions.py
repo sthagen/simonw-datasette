@@ -1117,16 +1117,29 @@ async def test_api_explorer_visibility(
 
 
 @pytest.mark.asyncio
-async def test_view_table_token_can_access_table(perms_ds):
-    actor = {
-        "id": "restricted-token",
-        "token": "dstok",
-        # Restricted to just view-table on perms_ds_two/t1
-        "_r": {"r": {"perms_ds_two": {"t1": ["vt"]}}},
+async def test_view_table_token_cannot_gain_access_without_base_permission(perms_ds):
+    # Only allow a different actor to view this table
+    previous_config = perms_ds.config
+    perms_ds.config = {
+        "databases": {
+            "perms_ds_two": {
+                # Only someone-else can see anything in this database
+                "allow": {"id": "someone-else"},
+            }
+        }
     }
-    cookies = {"ds_actor": perms_ds.client.actor_cookie(actor)}
-    response = await perms_ds.client.get("/perms_ds_two/t1.json", cookies=cookies)
-    assert response.status_code == 200
+    try:
+        actor = {
+            "id": "restricted-token",
+            "token": "dstok",
+            # Restricted token claims access to perms_ds_two/t1 only
+            "_r": {"r": {"perms_ds_two": {"t1": ["vt"]}}},
+        }
+        cookies = {"ds_actor": perms_ds.client.actor_cookie(actor)}
+        response = await perms_ds.client.get("/perms_ds_two/t1.json", cookies=cookies)
+        assert response.status_code == 403
+    finally:
+        perms_ds.config = previous_config
 
 
 @pytest.mark.asyncio
@@ -1327,14 +1340,43 @@ async def test_actor_restrictions_filters_allowed_resources(perms_ds):
     actor = {"id": "user", "_r": {"r": {"perms_ds_one": {"t1": ["vt"]}}}}
 
     # Should only return t1
-    allowed_tables = await perms_ds.allowed_resources("view-table", actor)
-    assert len(allowed_tables) == 1
-    assert allowed_tables[0].parent == "perms_ds_one"
-    assert allowed_tables[0].child == "t1"
+    page = await perms_ds.allowed_resources("view-table", actor)
+    assert len(page.resources) == 1
+    assert page.resources[0].parent == "perms_ds_one"
+    assert page.resources[0].child == "t1"
 
     # Database listing should be empty (no view-database permission)
-    allowed_dbs = await perms_ds.allowed_resources("view-database", actor)
-    assert len(allowed_dbs) == 0
+    db_page = await perms_ds.allowed_resources("view-database", actor)
+    assert len(db_page.resources) == 0
+
+
+@pytest.mark.asyncio
+async def test_actor_restrictions_do_not_expand_allowed_resources(perms_ds):
+    """Restrictions cannot grant access not already allowed to the actor."""
+
+    previous_config = perms_ds.config
+    perms_ds.config = {
+        "databases": {
+            "perms_ds_one": {
+                "allow": {"id": "someone-else"},
+            }
+        }
+    }
+    try:
+        actor = {"id": "user", "_r": {"r": {"perms_ds_one": {"t1": ["vt"]}}}}
+
+        # Base actor is not allowed to see t1, so restrictions should not change that
+        page = await perms_ds.allowed_resources("view-table", actor)
+        assert len(page.resources) == 0
+
+        # And explicit permission checks should still deny
+        response = await perms_ds.client.get(
+            "/perms_ds_one/t1.json",
+            cookies={"ds_actor": perms_ds.client.actor_cookie(actor)},
+        )
+        assert response.status_code == 403
+    finally:
+        perms_ds.config = previous_config
 
 
 @pytest.mark.asyncio
@@ -1343,12 +1385,10 @@ async def test_actor_restrictions_database_level(perms_ds):
 
     actor = {"id": "user", "_r": {"d": {"perms_ds_one": ["vt"]}}}
 
-    allowed_tables = await perms_ds.allowed_resources(
-        "view-table", actor, parent="perms_ds_one"
-    )
+    page = await perms_ds.allowed_resources("view-table", actor, parent="perms_ds_one")
 
     # Should return all tables in perms_ds_one
-    table_names = {r.child for r in allowed_tables}
+    table_names = {r.child for r in page.resources}
     assert "t1" in table_names
     assert "t2" in table_names
     assert "v1" in table_names  # views too
@@ -1360,11 +1400,11 @@ async def test_actor_restrictions_global_level(perms_ds):
 
     actor = {"id": "user", "_r": {"a": ["vt"]}}
 
-    allowed_tables = await perms_ds.allowed_resources("view-table", actor)
+    page = await perms_ds.allowed_resources("view-table", actor)
 
     # Should return all tables in all databases
-    assert len(allowed_tables) > 0
-    dbs = {r.parent for r in allowed_tables}
+    assert len(page.resources) > 0
+    dbs = {r.parent for r in page.resources}
     assert "perms_ds_one" in dbs
     assert "perms_ds_two" in dbs
 
@@ -1430,8 +1470,8 @@ async def test_actor_restrictions_view_instance_only(perms_ds):
     data = response.json()
     # The instance is visible but databases list should be empty or minimal
     # Actually, let's check via allowed_resources
-    allowed_dbs = await perms_ds.allowed_resources("view-database", actor)
-    assert len(allowed_dbs) == 0
+    page = await perms_ds.allowed_resources("view-database", actor)
+    assert len(page.resources) == 0
 
 
 @pytest.mark.asyncio
@@ -1441,11 +1481,11 @@ async def test_actor_restrictions_empty_allowlist(perms_ds):
     actor = {"id": "user", "_r": {}}
 
     # No actions in allowlist, so everything should be denied
-    allowed_tables = await perms_ds.allowed_resources("view-table", actor)
-    assert len(allowed_tables) == 0
+    page1 = await perms_ds.allowed_resources("view-table", actor)
+    assert len(page1.resources) == 0
 
-    allowed_dbs = await perms_ds.allowed_resources("view-database", actor)
-    assert len(allowed_dbs) == 0
+    page2 = await perms_ds.allowed_resources("view-database", actor)
+    assert len(page2.resources) == 0
 
     result = await perms_ds.allowed(action="view-instance", actor=actor)
     assert result is False
