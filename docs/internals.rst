@@ -781,8 +781,8 @@ Use ``is_mutable=False`` to add an immutable database.
 
 .. _datasette_add_memory_database:
 
-.add_memory_database(name)
---------------------------
+.add_memory_database(memory_name, name=None, route=None)
+--------------------------------------------------------
 
 Adds a shared in-memory database with the specified name:
 
@@ -800,7 +800,9 @@ This is a shortcut for the following:
         Database(datasette, memory_name="statistics")
     )
 
-Using either of these pattern will result in the in-memory database being served at ``/statistics``.
+Using either of these patterns will result in the in-memory database being served at ``/statistics``.
+
+The ``name`` and ``route`` parameters are optional and work the same way as they do for :ref:`datasette_add_database`.
 
 .. _datasette_remove_database:
 
@@ -1044,6 +1046,36 @@ These methods can be used with :ref:`internals_datasette_urls` - for example:
 ``datasette.client`` methods automatically take the current :ref:`setting_base_url` setting into account, whether or not you use the ``datasette.urls`` family of methods to construct the path.
 
 For documentation on available ``**kwargs`` options and the shape of the HTTPX Response object refer to the `HTTPX Async documentation <https://www.python-httpx.org/async/>`__.
+
+Bypassing permission checks
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+All ``datasette.client`` methods accept an optional ``skip_permission_checks=True`` parameter. When set, all permission checks will be bypassed for that request, allowing access to any resource regardless of the configured permissions.
+
+This is useful for plugins and internal operations that need to access all resources without being subject to permission restrictions.
+
+Example usage:
+
+.. code-block:: python
+
+    # Regular request - respects permissions
+    response = await datasette.client.get(
+        "/private-db/secret-table.json"
+    )
+    # May return 403 Forbidden if access is denied
+
+    # With skip_permission_checks - bypasses all permission checks
+    response = await datasette.client.get(
+        "/private-db/secret-table.json",
+        skip_permission_checks=True,
+    )
+    # Will return 200 OK and the data, regardless of permissions
+
+This parameter works with all HTTP methods (``get``, ``post``, ``put``, ``patch``, ``delete``, ``options``, ``head``) and the generic ``request`` method.
+
+.. warning::
+
+    Use ``skip_permission_checks=True`` with caution. It completely bypasses Datasette's permission system and should only be used in trusted plugin code or internal operations where you need guaranteed access to resources.
 
 .. _internals_datasette_urls:
 
