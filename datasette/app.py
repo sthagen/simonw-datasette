@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from asgi_csrf import Errors
 import asyncio
+import contextvars
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List
 
 if TYPE_CHECKING:
@@ -128,6 +129,22 @@ from .version import __version__
 from .resources import DatabaseResource, TableResource
 
 app_root = Path(__file__).parent.parent
+
+
+# Context variable to track when code is executing within a datasette.client request
+_in_datasette_client = contextvars.ContextVar("in_datasette_client", default=False)
+
+
+class _DatasetteClientContext:
+    """Context manager to mark code as executing within a datasette.client request."""
+
+    def __enter__(self):
+        self.token = _in_datasette_client.set(True)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        _in_datasette_client.reset(self.token)
+        return False
 
 
 @dataclasses.dataclass
@@ -304,6 +321,7 @@ class Datasette:
         crossdb=False,
         nolock=False,
         internal=None,
+        default_deny=False,
     ):
         self._startup_invoked = False
         assert config_dir is None or isinstance(
@@ -512,6 +530,7 @@ class Datasette:
         self._permission_checks = collections.deque(maxlen=200)
         self._root_token = secrets.token_hex(32)
         self.root_enabled = False
+        self.default_deny = default_deny
         self.client = DatasetteClient(self)
 
     async def apply_metadata_json(self):
@@ -612,6 +631,17 @@ class Datasette:
     def urls(self):
         return Urls(self)
 
+    @property
+    def pm(self):
+        """
+        Return the global plugin manager instance.
+
+        This provides access to the pluggy PluginManager that manages all
+        Datasette plugins and hooks. Use datasette.pm.hook.hook_name() to
+        call plugin hooks.
+        """
+        return pm
+
     async def invoke_startup(self):
         # This must be called for Datasette to be in a usable state
         if self._startup_invoked:
@@ -663,6 +693,14 @@ class Datasette:
 
     def unsign(self, signed, namespace="default"):
         return URLSafeSerializer(self._secret, namespace).loads(signed)
+
+    def in_client(self) -> bool:
+        """Check if the current code is executing within a datasette.client request.
+
+        Returns:
+            bool: True if currently executing within a datasette.client request, False otherwise.
+        """
+        return _in_datasette_client.get()
 
     def create_token(
         self,
@@ -2388,7 +2426,10 @@ class DatasetteClient:
 
     def __init__(self, ds):
         self.ds = ds
-        self.app = ds.app()
+
+    @property
+    def app(self):
+        return self.ds.app()
 
     def actor_cookie(self, actor):
         # Utility method, mainly for tests
@@ -2404,19 +2445,20 @@ class DatasetteClient:
     async def _request(self, method, path, skip_permission_checks=False, **kwargs):
         from datasette.permissions import SkipPermissions
 
-        if skip_permission_checks:
-            with SkipPermissions():
+        with _DatasetteClientContext():
+            if skip_permission_checks:
+                with SkipPermissions():
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=self.app),
+                        cookies=kwargs.pop("cookies", None),
+                    ) as client:
+                        return await getattr(client, method)(self._fix(path), **kwargs)
+            else:
                 async with httpx.AsyncClient(
                     transport=httpx.ASGITransport(app=self.app),
                     cookies=kwargs.pop("cookies", None),
                 ) as client:
                     return await getattr(client, method)(self._fix(path), **kwargs)
-        else:
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=self.app),
-                cookies=kwargs.pop("cookies", None),
-            ) as client:
-                return await getattr(client, method)(self._fix(path), **kwargs)
 
     async def get(self, path, skip_permission_checks=False, **kwargs):
         return await self._request(
@@ -2468,8 +2510,17 @@ class DatasetteClient:
         from datasette.permissions import SkipPermissions
 
         avoid_path_rewrites = kwargs.pop("avoid_path_rewrites", None)
-        if skip_permission_checks:
-            with SkipPermissions():
+        with _DatasetteClientContext():
+            if skip_permission_checks:
+                with SkipPermissions():
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=self.app),
+                        cookies=kwargs.pop("cookies", None),
+                    ) as client:
+                        return await client.request(
+                            method, self._fix(path, avoid_path_rewrites), **kwargs
+                        )
+            else:
                 async with httpx.AsyncClient(
                     transport=httpx.ASGITransport(app=self.app),
                     cookies=kwargs.pop("cookies", None),
@@ -2477,11 +2528,3 @@ class DatasetteClient:
                     return await client.request(
                         method, self._fix(path, avoid_path_rewrites), **kwargs
                     )
-        else:
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=self.app),
-                cookies=kwargs.pop("cookies", None),
-            ) as client:
-                return await client.request(
-                    method, self._fix(path, avoid_path_rewrites), **kwargs
-                )
