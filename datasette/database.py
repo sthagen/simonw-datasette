@@ -532,10 +532,7 @@ class Database:
             ]
 
         if sqlite_version()[1] >= 37:
-            hidden_tables += [
-                x[0]
-                for x in await self.execute(
-                    """
+            hidden_tables += [x[0] for x in await self.execute("""
                       with shadow_tables as (
                         select name
                         from pragma_table_list
@@ -554,14 +551,9 @@ class Database:
                         select name from core_tables
                       )
                       select name from combined order by 1
-                    """
-                )
-            ]
+                    """)]
         else:
-            hidden_tables += [
-                x[0]
-                for x in await self.execute(
-                    """
+            hidden_tables += [x[0] for x in await self.execute("""
                       WITH base AS (
                         SELECT name
                         FROM sqlite_master
@@ -607,22 +599,15 @@ class Database:
                         SELECT name FROM fts3_shadow_tables
                       )
                       SELECT name FROM final ORDER BY 1
-                    """
-                )
-            ]
+                    """)]
         # Also hide any FTS tables that have a content= argument
-        hidden_tables += [
-            x[0]
-            for x in await self.execute(
-                """
+        hidden_tables += [x[0] for x in await self.execute("""
                   SELECT name
                   FROM sqlite_master
                   WHERE sql LIKE '%VIRTUAL TABLE%'
                     AND sql LIKE '%USING FTS%'
                     AND sql LIKE '%content=%'
-                """
-            )
-        ]
+                """)]
 
         has_spatialite = await self.execute_fn(detect_spatialite)
         if has_spatialite:
@@ -641,16 +626,11 @@ class Database:
                 "KNN",
                 "KNN2",
             ] + [
-                r[0]
-                for r in (
-                    await self.execute(
-                        """
+                r[0] for r in (await self.execute("""
                         select name from sqlite_master
                         where name like "idx_%"
                         and type = "table"
-                    """
-                    )
-                ).rows
+                    """)).rows
             ]
 
         return hidden_tables

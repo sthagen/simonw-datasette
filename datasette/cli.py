@@ -109,15 +109,11 @@ def sqlite_extensions(fn):
             return fn(*args, **kwargs)
         except AttributeError as e:
             if "enable_load_extension" in str(e):
-                raise click.ClickException(
-                    textwrap.dedent(
-                        """
+                raise click.ClickException(textwrap.dedent("""
                     Your Python installation does not have the ability to load SQLite extensions.
 
                     More information: https://datasette.io/help/extensions
-                    """
-                    ).strip()
-                )
+                    """).strip())
             raise
 
     return wrapped

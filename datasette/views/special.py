@@ -13,7 +13,6 @@ from .base import BaseView, View
 import secrets
 import urllib
 
-
 logger = logging.getLogger(__name__)
 
 

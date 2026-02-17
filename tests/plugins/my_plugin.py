@@ -104,7 +104,7 @@ def extra_body_script(
 
 
 @hookimpl
-def render_cell(row, value, column, table, database, datasette, request):
+def render_cell(row, value, column, table, pks, database, datasette, request):
     async def inner():
         # Render some debug output in cell with value RENDER_CELL_DEMO
         if value == "RENDER_CELL_DEMO":
@@ -113,6 +113,7 @@ def render_cell(row, value, column, table, database, datasette, request):
                 "column": column,
                 "table": table,
                 "database": database,
+                "pks": pks,
                 "config": datasette.plugin_config(
                     "name-of-plugin",
                     database=database,
@@ -260,8 +261,7 @@ def register_routes():
             response = Response.redirect("/")
             datasette.set_actor_cookie(response, {"id": "root"})
             return response
-        return Response.html(
-            """
+        return Response.html("""
             <form action="{}" method="POST">
                 <p>
                     <input type="hidden" name="csrftoken" value="{}">
@@ -270,10 +270,7 @@ def register_routes():
                       style="font-size: 2em; padding: 0.1em 0.5em;">
                 </p>
             </form>
-        """.format(
-                request.path, request.scope["csrftoken"]()
-            )
-        )
+        """.format(request.path, request.scope["csrftoken"]()))
 
     def asgi_scope(scope):
         return Response.json(scope, default=repr)
