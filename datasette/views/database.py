@@ -615,8 +615,7 @@ class QueryView(View):
                 rows = results.rows
             except QueryInterrupted as ex:
                 raise DatasetteError(
-                    textwrap.dedent(
-                        """
+                    textwrap.dedent("""
                     <p>SQL query took too long. The time limit is controlled by the
                     <a href="https://docs.datasette.io/en/stable/settings.html#sql-time-limit-ms">sql_time_limit_ms</a>
                     configuration option.</p>
@@ -625,10 +624,7 @@ class QueryView(View):
                     let ta = document.querySelector("textarea");
                     ta.style.height = ta.scrollHeight + "px";
                     </script>
-                """.format(
-                            markupsafe.escape(ex.sql)
-                        )
-                    ).strip(),
+                """.format(markupsafe.escape(ex.sql))).strip(),
                     title="SQL Interrupted",
                     status=400,
                     message_is_html=True,

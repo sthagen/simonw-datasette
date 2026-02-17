@@ -471,7 +471,9 @@ async def test_write_wrapper_set_authorizer(datasette, actor, table, should_deny
                 ),
                 request=request,
             )
-            result = await db.execute(f"select value from {table} order by rowid desc limit 1")
+            result = await db.execute(
+                f"select value from {table} order by rowid desc limit 1"
+            )
             assert result.rows[0][0] == "test"
     finally:
         pm.unregister(name="test_set_authorizer")

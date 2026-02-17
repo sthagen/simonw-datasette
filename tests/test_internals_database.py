@@ -747,19 +747,15 @@ async def test_replace_database(tmpdir):
     path1 = str(tmpdir / "data1.db")
     (tmpdir / "two").mkdir()
     path2 = str(tmpdir / "two" / "data1.db")
-    sqlite3.connect(path1).executescript(
-        """
+    sqlite3.connect(path1).executescript("""
         create table t (id integer primary key);
         insert into t (id) values (1);
         insert into t (id) values (2);
-    """
-    )
-    sqlite3.connect(path2).executescript(
-        """
+    """)
+    sqlite3.connect(path2).executescript("""
         create table t (id integer primary key);
         insert into t (id) values (1);
-    """
-    )
+    """)
     datasette = Datasette([path1])
     db = datasette.get_database("data1")
     count = (await db.execute("select count(*) from t")).first()[0]

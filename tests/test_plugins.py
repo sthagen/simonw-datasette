@@ -233,9 +233,7 @@ async def test_hook_render_cell_pks_compound_pk(ds_client):
 @pytest.mark.asyncio
 async def test_hook_render_cell_pks_rowid_table(ds_client):
     """pks should be ["rowid"] for a table with no explicit primary key"""
-    response = await ds_client.get(
-        "/fixtures/no_primary_key?content=RENDER_CELL_DEMO"
-    )
+    response = await ds_client.get("/fixtures/no_primary_key?content=RENDER_CELL_DEMO")
     soup = Soup(response.text, "html.parser")
     td = soup.find("td", {"class": "col-content"})
     data = json.loads(td.string)
@@ -457,14 +455,12 @@ def view_names_client(tmp_path_factory):
     ):
         (templates / template).write_text("view_name:{{ view_name }}", "utf-8")
     (plugins / "extra_vars.py").write_text(
-        textwrap.dedent(
-            """
+        textwrap.dedent("""
         from datasette import hookimpl
         @hookimpl
         def extra_template_vars(view_name):
             return {"view_name": view_name}
-    """
-        ),
+    """),
         "utf-8",
     )
     db_path = str(tmpdir / "fixtures.db")

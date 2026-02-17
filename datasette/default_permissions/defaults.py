@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 from datasette import hookimpl
 from datasette.permissions import PermissionSQL
 
-
 # Actions that are allowed by default (unless --default-deny is used)
 DEFAULT_ALLOW_ACTIONS = frozenset(
     {

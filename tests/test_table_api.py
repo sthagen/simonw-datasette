@@ -1243,9 +1243,7 @@ async def test_paginate_using_link_header(ds_client, qs):
     reason="generated columns were added in SQLite 3.31.0",
 )
 def test_generated_columns_are_visible_in_datasette():
-    with make_app_client(
-        extra_databases={
-            "generated.db": """
+    with make_app_client(extra_databases={"generated.db": """
                 CREATE TABLE generated_columns (
                     body TEXT,
                     id INT GENERATED ALWAYS AS (json_extract(body, '$.number')) STORED,
@@ -1253,9 +1251,7 @@ def test_generated_columns_are_visible_in_datasette():
                 );
                 INSERT INTO generated_columns (body) VALUES (
                     '{"number": 1, "string": "This is a string"}'
-                );"""
-        }
-    ) as client:
+                );"""}) as client:
         response = client.get("/generated/generated_columns.json?_shape=array")
         assert response.json == [
             {

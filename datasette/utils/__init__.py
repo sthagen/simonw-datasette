@@ -677,9 +677,7 @@ def detect_fts_sql(table):
                     and sql like '%VIRTUAL TABLE%USING FTS%'
                 )
             )
-    """.format(
-        table=table.replace("'", "''")
-    )
+    """.format(table=table.replace("'", "''"))
 
 
 def detect_json1(conn=None):

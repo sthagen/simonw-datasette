@@ -13,7 +13,6 @@ import string
 import tempfile
 import textwrap
 
-
 # This temp file is used by one of the plugin config tests
 TEMP_PLUGIN_SECRET_FILE = os.path.join(tempfile.gettempdir(), "plugin-secret")
 
@@ -331,16 +330,14 @@ CONFIG = {
                     "sql": "select :_header_user_agent as user_agent, :_now_datetime_utc as datetime",
                 },
                 "neighborhood_search": {
-                    "sql": textwrap.dedent(
-                        """
+                    "sql": textwrap.dedent("""
                         select _neighborhood, facet_cities.name, state
                         from facetable
                             join facet_cities
                                 on facetable._city_id = facet_cities.id
                         where _neighborhood like '%' || :text || '%'
                         order by _neighborhood;
-                    """
-                    ),
+                    """),
                     "title": "Search neighborhoods",
                     "description_html": "<b>Demonstrating</b> simple like search",
                     "fragment": "fragment-goes-here",
@@ -710,19 +707,10 @@ CREATE VIEW searchable_view_configured_by_metadata AS
             for a, b, c, content in generate_compound_rows(1001)
         ]
     )
-    + "\n".join(
-        [
-            """INSERT INTO sortable VALUES (
+    + "\n".join(["""INSERT INTO sortable VALUES (
         "{pk1}", "{pk2}", "{content}", {sortable},
         {sortable_with_nulls}, {sortable_with_nulls_2}, "{text}");
-    """.format(
-                **row
-            ).replace(
-                "None", "null"
-            )
-            for row in generate_sortable_rows(201)
-        ]
-    )
+    """.format(**row).replace("None", "null") for row in generate_sortable_rows(201)])
 )
 TABLE_PARAMETERIZED_SQL = [
     ("insert into binary_data (data) values (?);", [b"\x15\x1c\x02\xc7\xad\x05\xfe"]),

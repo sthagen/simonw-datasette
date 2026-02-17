@@ -115,13 +115,9 @@ def test_plugins_cli(app_client):
 
 
 def test_metadata_yaml():
-    yaml_file = io.StringIO(
-        textwrap.dedent(
-            """
+    yaml_file = io.StringIO(textwrap.dedent("""
     title: Hello from YAML
-    """
-        )
-    )
+    """))
     # Annoyingly we have to provide all default arguments here:
     ds = serve.callback(
         [],

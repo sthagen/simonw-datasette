@@ -633,9 +633,7 @@ class Datasette:
                 """
                 INSERT OR REPLACE INTO catalog_databases (database_name, path, is_memory, schema_version)
                 VALUES {}
-            """.format(
-                    placeholders
-                ),
+            """.format(placeholders),
                 values,
             )
             await populate_schema_tables(internal_db, db)
@@ -813,14 +811,12 @@ class Datasette:
         return orig
 
     async def get_instance_metadata(self):
-        rows = await self.get_internal_database().execute(
-            """
+        rows = await self.get_internal_database().execute("""
               SELECT
                 key,
                 value
               FROM metadata_instance
-            """
-        )
+            """)
         return dict(rows)
 
     async def get_database_metadata(self, database_name: str):

@@ -620,14 +620,11 @@ async def test_urlify_custom_queries(ds_client):
     response = await ds_client.get(path)
     assert response.status_code == 200
     soup = Soup(response.content, "html.parser")
-    assert (
-        """<td class="col-user_url">
+    assert """<td class="col-user_url">
  <a href="https://twitter.com/simonw">
   https://twitter.com/simonw
  </a>
-</td>"""
-        == soup.find("td", {"class": "col-user_url"}).prettify().strip()
-    )
+</td>""" == soup.find("td", {"class": "col-user_url"}).prettify().strip()
 
 
 @pytest.mark.asyncio
