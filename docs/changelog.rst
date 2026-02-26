@@ -9,8 +9,8 @@ Changelog
 1.0a25 (2026-02-25)
 -------------------
 
-``write_wrapper`` plugin hook for intercepting write operations
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``write_wrapper()`` plugin hook for intercepting write operations
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A new :ref:`write_wrapper() <plugin_hook_write_wrapper>` plugin hook allows plugins to intercept and wrap database write operations. (`#2636 <https://github.com/simonw/datasette/pull/2636>`__)
 
