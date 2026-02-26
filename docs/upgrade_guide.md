@@ -111,6 +111,7 @@ Instead, one should use the following methods on a Datasette class:
 - {ref}`get_resource_metadata() <datasette_get_resource_metadata>`
 - {ref}`get_column_metadata() <datasette_get_column_metadata>`
 
+(upgrade_guide_v1_a20)=
 ```{include} upgrade-1.0a20.md
 :heading-offset: 1
 ```

@@ -90,6 +90,7 @@ If you want to change Datasette's Python code you can use the ``--reload`` optio
 You can also use the ``fixtures.py`` script to recreate the testing version of ``metadata.json`` used by the unit tests. To do that::
 
     uv run python tests/fixtures.py fixtures.db fixtures-metadata.json
+
 Or to output the plugins used by the tests, run this::
 
     uv run python tests/fixtures.py fixtures.db fixtures-metadata.json fixtures-plugins

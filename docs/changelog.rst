@@ -4,6 +4,47 @@
 Changelog
 =========
 
+.. _v1_0_a25:
+
+1.0a25 (2026-02-25)
+-------------------
+
+``write_wrapper`` plugin hook for intercepting write operations
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A new :ref:`write_wrapper() <plugin_hook_write_wrapper>` plugin hook allows plugins to intercept and wrap database write operations. (`#2636 <https://github.com/simonw/datasette/pull/2636>`__)
+
+Plugins implement the hook as a generator-based context manager:
+
+.. code-block:: python
+
+    @hookimpl
+    def write_wrapper(datasette, database, request):
+        def wrapper(conn):
+            # Setup code runs before the write
+            yield
+            # Cleanup code runs after the write
+
+        return wrapper
+
+``register_token_handler()`` plugin hook for custom API token backends
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A new :ref:`register_token_handler() <plugin_hook_register_token_handler>` plugin hook allows plugins to provide custom token backends for API authentication. (`#2650 <https://github.com/simonw/datasette/pull/2650>`__)
+
+This includes a **backwards incompatible change**: the ``datasette.create_token()`` internal  method is now an ``async`` method. Consult the :ref:`upgrade guide <upgrade_guide_v1_a25>` for details on how to update your code.
+
+``render_cell()`` now receives a ``pks`` parameter
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The :ref:`render_cell() <plugin_hook_render_cell>` plugin hook now receives a ``pks`` parameter containing the list of primary key column names for the table being rendered. This avoids plugins needing to make redundant async calls to look up primary keys. (`#2641 <https://github.com/simonw/datasette/pull/2641>`__)
+
+Other changes
+~~~~~~~~~~~~~
+
+- Facets defined in metadata now preserve their configured order, instead of being sorted by result count. Request-based facets added via the ``_facet`` parameter are still sorted by result count and appear after metadata-defined facets. (:issue:`2647`)
+- Fixed ``--reload`` incorrectly interpreting the ``serve`` command as a file argument. Thanks, `Daniel Bates <https://github.com/danielalanbates>`__. (`#2646 <https://github.com/simonw/datasette/pull/2646>`__)
+
 .. _v1_0_a24:
 
 1.0a24 (2026-01-29)
