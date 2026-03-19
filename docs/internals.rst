@@ -922,7 +922,7 @@ await .get_column_type(database, resource, column)
 ``column`` - string
     The name of the column.
 
-Returns a :ref:`ColumnType <column_types>` subclass instance with ``.config`` populated for the specified column, or ``None`` if no column type is assigned.
+Returns a ``ColumnType`` subclass instance with ``.config`` populated for the specified column, or ``None`` if no column type is assigned.
 
 .. code-block:: python
 
@@ -943,7 +943,7 @@ await .get_column_types(database, resource)
 ``resource`` - string
     The name of the table or view.
 
-Returns a dictionary mapping column names to :ref:`ColumnType <column_types>` subclass instances (with ``.config`` populated) for all columns that have assigned types on the given resource.
+Returns a dictionary mapping column names to ``ColumnType`` subclass instances (with ``.config`` populated) for all columns that have assigned types on the given resource.
 
 .. code-block:: python
 
@@ -968,6 +968,7 @@ await .set_column_type(database, resource, column, column_type, config=None)
     Optional configuration dict for the column type.
 
 Assigns a column type to a column. Overwrites any existing assignment for that column.
+Raises ``ValueError`` if the column type declares ``sqlite_types`` and the target column does not match one of those SQLite types.
 
 .. code-block:: python
 

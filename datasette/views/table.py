@@ -369,6 +369,7 @@ async def display_columns_and_rows(
                 "is_pk": False,
                 "type": "",
                 "notnull": 0,
+                "is_special_link_column": True,
             }
         columns = [first_column] + columns
     return columns, cell_rows
@@ -663,6 +664,122 @@ class TableUpsertView(TableInsertView):
 
     async def post(self, request):
         return await super().post(request, upsert=True)
+
+
+class TableSetColumnTypeView(BaseView):
+    name = "table-set-column-type"
+
+    def __init__(self, datasette):
+        self.ds = datasette
+
+    async def post(self, request):
+        try:
+            resolved = await self.ds.resolve_table(request)
+        except NotFound as e:
+            return _error([e.args[0]], 404)
+
+        database_name = resolved.db.name
+        table_name = resolved.table
+
+        if not await self.ds.allowed(
+            action="set-column-type",
+            resource=TableResource(database=database_name, table=table_name),
+            actor=request.actor,
+        ):
+            return _error(["Permission denied"], 403)
+
+        content_type = request.headers.get("content-type") or ""
+        if not content_type.startswith("application/json"):
+            return _error(["Invalid content-type, must be application/json"], 400)
+
+        try:
+            data = json.loads(await request.post_body())
+        except json.JSONDecodeError as e:
+            return _error(["Invalid JSON: {}".format(e)], 400)
+
+        if not isinstance(data, dict):
+            return _error(["JSON must be a dictionary"], 400)
+
+        invalid_keys = set(data.keys()) - {"column", "column_type"}
+        if invalid_keys:
+            return _error(
+                ['Invalid parameter: "{}"'.format('", "'.join(sorted(invalid_keys)))],
+                400,
+            )
+
+        if "column" not in data:
+            return _error(['"column" is required'], 400)
+        column = data["column"]
+        if not isinstance(column, str):
+            return _error(['"column" must be a string'], 400)
+
+        if "column_type" not in data:
+            return _error(['"column_type" is required'], 400)
+
+        column_details = await self.ds._get_resource_column_details(
+            database_name, table_name
+        )
+        if column not in column_details:
+            return _error(["Column not found: {}".format(column)], 400)
+
+        column_type_data = data["column_type"]
+        if column_type_data is None:
+            await self.ds.remove_column_type(database_name, table_name, column)
+            return Response.json(
+                {
+                    "ok": True,
+                    "database": database_name,
+                    "table": table_name,
+                    "column": column,
+                    "column_type": None,
+                },
+                status=200,
+            )
+
+        if not isinstance(column_type_data, dict):
+            return _error(['"column_type" must be an object or null'], 400)
+
+        invalid_column_type_keys = set(column_type_data.keys()) - {"type", "config"}
+        if invalid_column_type_keys:
+            return _error(
+                [
+                    'Invalid column_type parameter: "{}"'.format(
+                        '", "'.join(sorted(invalid_column_type_keys))
+                    )
+                ],
+                400,
+            )
+
+        if "type" not in column_type_data:
+            return _error(['"column_type.type" is required'], 400)
+        column_type = column_type_data["type"]
+        if not isinstance(column_type, str):
+            return _error(['"column_type.type" must be a string'], 400)
+
+        config = column_type_data.get("config")
+        if config is not None and not isinstance(config, dict):
+            return _error(['"column_type.config" must be a dictionary'], 400)
+
+        if column_type not in self.ds._column_types:
+            return _error(["Unknown column type: {}".format(column_type)], 400)
+
+        try:
+            await self.ds.set_column_type(
+                database_name, table_name, column, column_type, config
+            )
+        except ValueError as e:
+            return _error([str(e)], 400)
+
+        return Response.json(
+            {
+                "ok": True,
+                "database": database_name,
+                "table": table_name,
+                "column": column,
+                "column_type": {"type": column_type, "config": config},
+            },
+            status=200,
+        )
 
 
 class TableDropView(BaseView):
@@ -1604,6 +1721,47 @@ async def table_view_data(
             for col_name, ct in ct_map.items()
         }
 
+    async def extra_set_column_type_ui():
+        "Column type UI metadata for this table"
+        if is_view:
+            return None
+
+        if not await datasette.allowed(
+            action="set-column-type",
+            resource=TableResource(database=database_name, table=table_name),
+            actor=request.actor,
+        ):
+            return None
+
+        column_details = await datasette._get_resource_column_details(
+            database_name, table_name
+        )
+        ct_map = await datasette.get_column_types(database_name, table_name)
+        columns = {}
+        for column_name, column_detail in column_details.items():
+            current = ct_map.get(column_name)
+            columns[column_name] = {
+                "current": (
+                    {"type": current.name, "config": current.config}
+                    if current is not None
+                    else None
+                ),
+                "options": [
+                    {
+                        "name": name,
+                        "description": ct_cls.description,
+                    }
+                    for name, ct_cls in sorted(datasette._column_types.items())
+                    if datasette._column_type_is_applicable(ct_cls, column_detail)
+                ],
+            }
+        return {
+            "path": "{}/-/set-column-type".format(
+                datasette.urls.table(database_name, table_name)
+            ),
+            "columns": columns,
+        }
+
     async def extra_metadata():
         "Metadata about the table and database"
         tablemetadata = await datasette.get_resource_metadata(database_name, table_name)
@@ -1786,6 +1944,7 @@ async def table_view_data(
             "all_columns",
             "expandable_columns",
             "form_hidden_args",
+            "set_column_type_ui",
         ]
     }
 
@@ -1814,6 +1973,7 @@ async def table_view_data(
         extra_request,
         extra_query,
         extra_column_types,
+        extra_set_column_type_ui,
         extra_metadata,
         extra_extras,
         extra_database,

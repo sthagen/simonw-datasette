@@ -248,6 +248,7 @@ async def test_sort_links(ds_client):
                 "data-column-type": "",
                 "data-column-not-null": "0",
                 "data-is-pk": "0",
+                "data-is-link-column": "1",
             },
             "a_href": None,
         },
@@ -748,6 +749,21 @@ async def test_column_chooser_present(ds_client):
     assert "allColumns" in script_text
     assert "selectedColumns" in script_text
     assert "primaryKeys" in script_text
+
+
+@pytest.mark.asyncio
+async def test_mobile_column_actions_present(ds_client):
+    response = await ds_client.get("/fixtures/facetable")
+    assert response.status_code == 200
+    soup = Soup(response.text, "html.parser")
+    button = soup.select_one("button.column-actions-mobile.small-screen-only")
+    assert button is not None
+    assert button.text.strip() == "Column actions"
+    assert button.find("svg") is not None
+    assert any(
+        "mobile-column-actions.js" in (script.get("src") or "")
+        for script in soup.find_all("script")
+    )
 
 
 @pytest.mark.asyncio

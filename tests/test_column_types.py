@@ -1,7 +1,12 @@
+import json
 import logging
 
+from bs4 import BeautifulSoup as Soup
 from datasette.app import Datasette
-from datasette.column_types import ColumnType
+from datasette.column_types import (
+    ColumnType,
+    SQLiteType,
+)
 from datasette.hookspecs import hookimpl
 from datasette.plugins import pm
 from datasette.utils import sqlite3
@@ -53,6 +58,49 @@ def ds_ct(tmp_path_factory):
             database.close()
 
 
+@pytest.fixture
+def ds_ct_editor_permission(tmp_path_factory):
+    db_directory = tmp_path_factory.mktemp("dbs")
+    db_path = str(db_directory / "data.db")
+    db = sqlite3.connect(str(db_path))
+    db.execute("vacuum")
+    db.execute(
+        "create table posts (id integer primary key, title text, body text, "
+        "author_email text, website text, metadata text)"
+    )
+    db.execute(
+        "insert into posts values (1, 'Hello', '# World', 'test@example.com', "
+        "'https://example.com', '{\"key\": \"value\"}')"
+    )
+    db.commit()
+    ds = Datasette(
+        [db_path],
+        config={
+            "databases": {
+                "data": {
+                    "tables": {
+                        "posts": {
+                            "permissions": {"set-column-type": {"id": "editor"}},
+                            "column_types": {
+                                "body": "markdown",
+                                "author_email": "email",
+                                "website": "url",
+                                "metadata": "json",
+                            },
+                        }
+                    }
+                }
+            }
+        },
+    )
+    ds.root_enabled = True
+    yield ds
+    db.close()
+    for database in ds.databases.values():
+        if not database.is_memory:
+            database.close()
+
+
 def write_token(ds, actor_id="root", permissions=None):
     to_sign = {"a": actor_id, "token": "dstok", "t": int(time.time())}
     if permissions:
@@ -65,6 +113,19 @@ def _headers(token):
         "Authorization": "Bearer {}".format(token),
         "Content-Type": "application/json",
     }
+
+
+def _window_data_from_html(html, variable_name):
+    soup = Soup(html, "html.parser")
+    scripts = soup.find_all("script")
+    matching_scripts = [
+        script for script in scripts if variable_name in (script.string or "")
+    ]
+    assert len(matching_scripts) == 1
+    script_text = matching_scripts[0].string.strip()
+    prefix = f"window.{variable_name} = "
+    assert script_text.startswith(prefix)
+    return json.loads(script_text[len(prefix) :].rstrip(";"))
 
 
 # --- Internal DB and config loading ---
@@ -183,6 +244,252 @@ async def test_set_column_type_with_config(ds_ct):
     assert ct.config == {"max_length": 200}
 
 
+@pytest.mark.asyncio
+async def test_set_column_type_api(ds_ct):
+    await ds_ct.invoke_startup()
+    token = write_token(ds_ct, permissions=["sct"])
+    response = await ds_ct.client.post(
+        "/data/posts/-/set-column-type",
+        json={"column": "title", "column_type": {"type": "email"}},
+        headers=_headers(token),
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "database": "data",
+        "table": "posts",
+        "column": "title",
+        "column_type": {"type": "email", "config": None},
+    }
+    ct = await ds_ct.get_column_type("data", "posts", "title")
+    assert ct.name == "email"
+    assert ct.config is None
+
+
+@pytest.mark.asyncio
+async def test_set_column_type_api_with_config(ds_ct):
+    await ds_ct.invoke_startup()
+    token = write_token(ds_ct, permissions=["sct"])
+    response = await ds_ct.client.post(
+        "/data/posts/-/set-column-type",
+        json={
+            "column": "title",
+            "column_type": {"type": "url", "config": {"max_length": 200}},
+        },
+        headers=_headers(token),
+    )
+    assert response.status_code == 200
+    assert response.json()["column_type"] == {
+        "type": "url",
+        "config": {"max_length": 200},
+    }
+    ct = await ds_ct.get_column_type("data", "posts", "title")
+    assert ct.name == "url"
+    assert ct.config == {"max_length": 200}
+
+
+@pytest.mark.asyncio
+async def test_clear_column_type_api(ds_ct):
+    await ds_ct.invoke_startup()
+    await ds_ct.set_column_type("data", "posts", "title", "email")
+    token = write_token(ds_ct, permissions=["sct"])
+    response = await ds_ct.client.post(
+        "/data/posts/-/set-column-type",
+        json={"column": "title", "column_type": None},
+        headers=_headers(token),
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "database": "data",
+        "table": "posts",
+        "column": "title",
+        "column_type": None,
+    }
+    ct = await ds_ct.get_column_type("data", "posts", "title")
+    assert ct is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body,special_case,expected_status,expected_errors",
+    (
+        (
+            {"column": "title", "column_type": {"type": "email"}},
+            "no_permission",
+            403,
+            ["Permission denied"],
+        ),
+        (
+            None,
+            "invalid_json",
+            400,
+            [
+                "Invalid JSON: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+            ],
+        ),
+        (
+            {"column": "title", "column_type": {"type": "email"}},
+            "invalid_content_type",
+            400,
+            ["Invalid content-type, must be application/json"],
+        ),
+        (
+            [],
+            None,
+            400,
+            ["JSON must be a dictionary"],
+        ),
+        (
+            {"column_type": {"type": "email"}},
+            None,
+            400,
+            ['"column" is required'],
+        ),
+        (
+            {"column": 1, "column_type": {"type": "email"}},
+            None,
+            400,
+            ['"column" must be a string'],
+        ),
+        (
+            {"column": "not_a_column", "column_type": {"type": "email"}},
+            None,
+            400,
+            ["Column not found: not_a_column"],
+        ),
+        (
+            {"column": "title", "column_type": "email"},
+            None,
+            400,
+            ['"column_type" must be an object or null'],
+        ),
+        (
+            {"column": "title", "column_type": {}},
+            None,
+            400,
+            ['"column_type.type" is required'],
+        ),
+        (
+            {"column": "title", "column_type": {"type": 1}},
+            None,
+            400,
+            ['"column_type.type" must be a string'],
+        ),
+        (
+            {"column": "title", "column_type": {"type": "url", "config": []}},
+            None,
+            400,
+            ['"column_type.config" must be a dictionary'],
+        ),
+        (
+            {"column": "title", "column_type": {"type": "markdown"}},
+            None,
+            400,
+            ["Unknown column type: markdown"],
+        ),
+        (
+            {"column": "id", "column_type": {"type": "json"}},
+            None,
+            400,
+            [
+                "Column type 'json' is only applicable to SQLite types TEXT but data.posts.id has SQLite type INTEGER"
+            ],
+        ),
+        (
+            {
+                "column": "title",
+                "column_type": {"type": "email"},
+                "extra": True,
+            },
+            None,
+            400,
+            ['Invalid parameter: "extra"'],
+        ),
+    ),
+)
+async def test_set_column_type_api_errors(
+    ds_ct, body, special_case, expected_status, expected_errors
+):
+    await ds_ct.invoke_startup()
+    token = write_token(
+        ds_ct,
+        permissions=(["sct"] if special_case != "no_permission" else ["vi"]),
+    )
+    kwargs = {
+        "headers": {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": (
+                "text/plain"
+                if special_case == "invalid_content_type"
+                else "application/json"
+            ),
+        }
+    }
+    if special_case == "invalid_json":
+        kwargs["content"] = "{bad json"
+    else:
+        kwargs["json"] = body
+    response = await ds_ct.client.post("/data/posts/-/set-column-type", **kwargs)
+    assert response.status_code == expected_status
+    assert response.json() == {"ok": False, "errors": expected_errors}
+
+
+@pytest.mark.asyncio
+async def test_set_column_type_api_works_for_immutable_database(tmp_path_factory):
+    db_directory = tmp_path_factory.mktemp("dbs")
+    db_path = str(db_directory / "immutable.db")
+    db = sqlite3.connect(str(db_path))
+    db.execute("vacuum")
+    db.execute("create table posts (id integer primary key, title text)")
+    db.commit()
+    ds = Datasette([], immutables=[db_path])
+    ds.root_enabled = True
+    try:
+        await ds.invoke_startup()
+        token = write_token(ds, permissions=["sct"])
+        response = await ds.client.post(
+            "/immutable/posts/-/set-column-type",
+            json={"column": "title", "column_type": {"type": "email"}},
+            headers=_headers(token),
+        )
+        assert response.status_code == 200
+        assert response.json()["column_type"] == {"type": "email", "config": None}
+        ct = await ds.get_column_type("immutable", "posts", "title")
+        assert ct.name == "email"
+    finally:
+        db.close()
+        for database in ds.databases.values():
+            if not database.is_memory:
+                database.close()
+
+
+@pytest.mark.asyncio
+async def test_set_column_type_rejects_incompatible_sqlite_type(ds_ct):
+    await ds_ct.invoke_startup()
+    with pytest.raises(ValueError, match="only applicable to SQLite types TEXT"):
+        await ds_ct.set_column_type("data", "posts", "id", "json")
+
+
+@pytest.mark.asyncio
+async def test_set_column_type_allows_varchar_for_text_only_type(tmp_path_factory):
+    db_directory = tmp_path_factory.mktemp("dbs")
+    db_path = str(db_directory / "data.db")
+    db = sqlite3.connect(str(db_path))
+    db.execute("vacuum")
+    db.execute("create table links (id integer primary key, url varchar(255))")
+    db.commit()
+    ds = Datasette([db_path])
+    await ds.invoke_startup()
+    await ds.set_column_type("data", "links", "url", "url")
+    ct = await ds.get_column_type("data", "links", "url")
+    assert ct.name == "url"
+    db.close()
+    for database in ds.databases.values():
+        if not database.is_memory:
+            database.close()
+
+
 # --- Plugin registration ---
 
 
@@ -202,9 +509,23 @@ async def test_column_type_class_attributes(ds_ct):
     url_cls = ds_ct._column_types["url"]
     assert url_cls.name == "url"
     assert url_cls.description == "URL"
+    assert url_cls.sqlite_types == (SQLiteType.TEXT,)
     email_cls = ds_ct._column_types["email"]
     assert email_cls.name == "email"
     assert email_cls.description == "Email address"
+    assert email_cls.sqlite_types == (SQLiteType.TEXT,)
+    json_cls = ds_ct._column_types["json"]
+    assert json_cls.sqlite_types == (SQLiteType.TEXT,)
+
+
+def test_sqlite_type_from_declared_type():
+    assert SQLiteType.from_declared_type("text") == SQLiteType.TEXT
+    assert SQLiteType.from_declared_type("varchar(255)") == SQLiteType.TEXT
+    assert SQLiteType.from_declared_type("integer") == SQLiteType.INTEGER
+    assert SQLiteType.from_declared_type("float") == SQLiteType.REAL
+    assert SQLiteType.from_declared_type("blob") == SQLiteType.BLOB
+    assert SQLiteType.from_declared_type("") == SQLiteType.NULL
+    assert SQLiteType.from_declared_type("numeric") is None
 
 
 # --- JSON API ---
@@ -597,6 +918,50 @@ async def test_html_table_page_rendering(ds_ct):
     assert 'href="https://example.com"' in html
 
 
+@pytest.mark.asyncio
+async def test_set_column_type_ui_data_hidden_without_permission(ds_ct):
+    await ds_ct.invoke_startup()
+    response = await ds_ct.client.get("/data/posts")
+    assert response.status_code == 200
+    assert "window._setColumnTypeData" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_set_column_type_ui_data_includes_applicable_types(
+    ds_ct_editor_permission,
+):
+    await ds_ct_editor_permission.invoke_startup()
+    response = await ds_ct_editor_permission.client.get(
+        "/data/posts",
+        cookies={
+            "ds_actor": ds_ct_editor_permission.client.actor_cookie({"id": "editor"})
+        },
+    )
+    assert response.status_code == 200
+    data = _window_data_from_html(response.text, "_setColumnTypeData")
+    assert data["path"] == "/data/posts/-/set-column-type"
+    assert data["columns"]["id"] == {
+        "current": None,
+        "options": [],
+    }
+    assert data["columns"]["title"] == {
+        "current": None,
+        "options": [
+            {"name": "email", "description": "Email address"},
+            {"name": "json", "description": "JSON data"},
+            {"name": "url", "description": "URL"},
+        ],
+    }
+    assert data["columns"]["author_email"] == {
+        "current": {"type": "email", "config": None},
+        "options": [
+            {"name": "email", "description": "Email address"},
+            {"name": "json", "description": "JSON data"},
+            {"name": "url", "description": "URL"},
+        ],
+    }
+
+
 # --- Validation on upsert ---
 
 
@@ -652,6 +1017,30 @@ async def test_unknown_type_warning_logged(tmp_path_factory, caplog):
         await ds.invoke_startup()
     assert "unknown type" in caplog.text.lower()
     assert "nonexistent_type" in caplog.text
+    db.close()
+    for database in ds.databases.values():
+        if not database.is_memory:
+            database.close()
+
+
+@pytest.mark.asyncio
+async def test_incompatible_sqlite_type_warning_logged(tmp_path_factory, caplog):
+    db_directory = tmp_path_factory.mktemp("dbs")
+    db_path = str(db_directory / "data.db")
+    db = sqlite3.connect(str(db_path))
+    db.execute("vacuum")
+    db.execute("create table t (id integer primary key, col integer)")
+    db.commit()
+    ds = Datasette(
+        [db_path],
+        config={
+            "databases": {"data": {"tables": {"t": {"column_types": {"col": "json"}}}}}
+        },
+    )
+    with caplog.at_level(logging.WARNING):
+        await ds.invoke_startup()
+    assert "only applicable to sqlite types text" in caplog.text.lower()
+    assert await ds.get_column_type("data", "t", "col") is None
     db.close()
     for database in ds.databases.values():
         if not database.is_memory:

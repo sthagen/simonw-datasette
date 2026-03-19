@@ -503,10 +503,10 @@ Lets you customize the display of values within table cells in the HTML table vi
 ``request`` - :ref:`internals_request`
     The current request object
 
-``column_type`` - :ref:`ColumnType <column_types>` subclass instance or None
-    The :ref:`ColumnType <column_types>` subclass instance assigned to this column (with ``.config`` populated), or ``None`` if no column type is assigned. You can access ``column_type.name``, ``column_type.config``, etc.
+``column_type`` - :ref:`ColumnType <datasette_column_types>` subclass instance or None
+    The :ref:`ColumnType <datasette_column_types>` subclass instance assigned to this column (with ``.config`` populated), or ``None`` if no column type is assigned. You can access ``column_type.name``, ``column_type.config``, etc.
 
-If a column has a :ref:`column type <column_types>` assigned and that column type's ``render_cell`` method returns a non-``None`` value, it will take priority over this plugin hook.
+If a column has a :ref:`column type <datasette_column_types>` assigned and that column type's ``render_cell`` method returns a non-``None`` value, it will take priority over this plugin hook.
 
 If your hook returns ``None``, it will be ignored. Use this to indicate that your hook is not able to custom render this particular value.
 
@@ -890,13 +890,15 @@ Actions define what operations can be performed on resources (like viewing a tab
         """A collection of documents."""
 
         name = "document-collection"
-        parent_name = None
+        parent_class = None
 
         def __init__(self, collection: str):
             super().__init__(parent=collection, child=None)
 
         @classmethod
-        def resources_sql(cls) -> str:
+        async def resources_sql(
+            cls, datasette, actor=None
+        ) -> str:
             return """
                 SELECT collection_name AS parent, NULL AS child
                 FROM document_collections
@@ -907,13 +909,15 @@ Actions define what operations can be performed on resources (like viewing a tab
         """A document in a collection."""
 
         name = "document"
-        parent_name = "document-collection"
+        parent_class = DocumentCollectionResource
 
         def __init__(self, collection: str, document: str):
             super().__init__(parent=collection, child=document)
 
         @classmethod
-        def resources_sql(cls) -> str:
+        async def resources_sql(
+            cls, datasette, actor=None
+        ) -> str:
             return """
                 SELECT collection_name AS parent, document_id AS child
                 FROM documents
@@ -959,13 +963,15 @@ The fields of the ``Action`` dataclass are as follows:
 
     - Define a ``name`` class attribute (e.g., ``"document"``)
     - Define a ``parent_class`` class attribute (``None`` for top-level resources like databases, or the parent ``Resource`` subclass for child resources)
-    - Implement a ``resources_sql()`` classmethod that returns SQL returning all resources as ``(parent, child)`` columns
+    - Implement an async ``resources_sql(cls, datasette, actor=None)`` classmethod that returns SQL returning all resources as ``(parent, child)`` columns
     - Have an ``__init__`` method that accepts appropriate parameters and calls ``super().__init__(parent=..., child=...)``
 
-The ``resources_sql()`` method
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. _plugin_resources_sql:
 
-The ``resources_sql()`` classmethod returns a SQL query that lists all resources of that type that exist in the system.
+The ``resources_sql(datasette, actor)`` method
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``resources_sql()`` classmethod returns a SQL query that lists all resources of that type that exist in the system. It can be async because Datasette calls it with ``await``, and it receives the current ``datasette`` instance plus an optional ``actor`` argument.
 
 This query is used by Datasette to efficiently check permissions across multiple resources at once. When a user requests a list of resources (like tables, documents, or other entities), Datasette uses this SQL to:
 
@@ -984,7 +990,7 @@ For example, if you're building a document management plugin with collections an
 .. code-block:: python
 
     @classmethod
-    def resources_sql(cls) -> str:
+    async def resources_sql(cls, datasette, actor=None) -> str:
         return """
             SELECT collection_name AS parent, document_id AS child
             FROM documents
@@ -999,18 +1005,19 @@ The permission system then uses this query along with rules from plugins to dete
 register_column_types(datasette)
 --------------------------------
 
-Return a list of :ref:`ColumnType <column_types>` **subclasses** (not instances) to register custom column types. Column types define how values in specific columns are rendered, validated, and transformed.
+Return a list of :ref:`ColumnType <datasette_column_types>` **subclasses** (not instances) to register custom column types. Column types define how values in specific columns are rendered, validated, and transformed.
 
 .. code-block:: python
 
     from datasette import hookimpl
-    from datasette.column_types import ColumnType
+    from datasette.column_types import ColumnType, SQLiteType
     import markupsafe
 
 
     class ColorColumnType(ColumnType):
         name = "color"
         description = "CSS color value"
+        sqlite_types = (SQLiteType.TEXT,)
 
         async def render_cell(
             self,
@@ -1052,6 +1059,9 @@ Each ``ColumnType`` subclass must define the following class attributes:
 ``description`` - string
     Human-readable label, e.g. ``"CSS color value"``.
 
+``sqlite_types`` - tuple of ``SQLiteType`` values, optional
+    Restrict assignments of this column type to columns with matching SQLite types, e.g. ``(SQLiteType.TEXT,)``. If omitted, the column type can be assigned to any column.
+
 And the following methods, all optional:
 
 ``render_cell(self, value, column, table, database, datasette, request)``
@@ -1065,7 +1075,7 @@ And the following methods, all optional:
 
 Per-column configuration is available via ``self.config`` in all methods. When a column type is looked up for a specific column (via :ref:`get_column_type <datasette_get_column_type>` or :ref:`get_column_types <datasette_get_column_types>`), the returned instance has ``config`` set to the parsed JSON config dict for that column assignment, or ``None`` if no config was provided.
 
-Column types are assigned to columns via the ``column_types`` key in :ref:`table configuration <metadata_tables>`:
+Column types are assigned to columns via the :ref:`column_types <table_configuration_column_types>` table configuration option:
 
 .. code-block:: yaml
 
@@ -2485,4 +2495,3 @@ Tokens can then be created and verified using :ref:`datasette.create_token() <da
     actor = await datasette.verify_token(token)
 
 If no handlers are registered, ``create_token()`` raises ``RuntimeError``. If the requested ``handler`` name is not found, it raises ``ValueError``.
-

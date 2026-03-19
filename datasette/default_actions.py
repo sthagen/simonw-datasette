@@ -86,6 +86,12 @@ def register_actions():
             resource_class=TableResource,
         ),
         Action(
+            name="set-column-type",
+            abbr="sct",
+            description="Set column type",
+            resource_class=TableResource,
+        ),
+        Action(
             name="drop-table",
             abbr="dt",
             description="Drop tables",
