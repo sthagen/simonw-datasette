@@ -1739,6 +1739,36 @@ For example:
     except Exception as e:
         print("An error occurred:", e)
 
+Your function can optionally accept a ``track_event`` parameter in addition to ``conn``.  If it does, it will be passed a callable that can be used to queue events for dispatch after the write transaction commits successfully.  Events queued this way are discarded if the write raises an exception.
+
+.. code-block:: python
+
+    from datasette.events import AlterTableEvent
+
+
+    def my_write(conn, track_event):
+        before_schema = conn.execute(
+            "select sql from sqlite_master where name = 'my_table'"
+        ).fetchone()[0]
+        conn.execute(
+            "alter table my_table add column new_col text"
+        )
+        after_schema = conn.execute(
+            "select sql from sqlite_master where name = 'my_table'"
+        ).fetchone()[0]
+        track_event(
+            AlterTableEvent(
+                actor=None,
+                database="mydb",
+                table="my_table",
+                before_schema=before_schema,
+                after_schema=after_schema,
+            )
+        )
+
+
+    await database.execute_write_fn(my_write)
+
 The value returned from ``await database.execute_write_fn(...)`` will be the return value from your function.
 
 If your function raises an exception that exception will be propagated up to the ``await`` line.
@@ -1757,6 +1787,8 @@ This method works is similar to :ref:`execute_write_fn() <database_execute_write
 The :ref:`prepare_connection() <plugin_hook_prepare_connection>` plugin hook is not executed against this connection.
 
 This allows plugins to execute database operations that might conflict with how database connections are usually configured. For example, running a ``VACUUM`` operation while bypassing any restrictions placed by the `datasette-sqlite-authorizer <https://github.com/datasette/datasette-sqlite-authorizer>`__ plugin.
+
+Running ``VACUUM`` using this method also ensures it won't trigger incorrect :class:`~datasette.events.RenameTableEvent` events, since ``execute_isolated_fn()`` does not trigger the Datasette mechanism that detects renamed tables in a way that can be confused by a ``VACUUM``.
 
 Plugins can also use this method to load potentially dangerous SQLite extensions, use them to perform an operation and then have them safely unloaded at the end of the call, without risk of exposing them to other connections.
 
@@ -2114,6 +2146,43 @@ Note that the space character is a special case: it will be replaced with a ``+`
 .. _internals_utils_tilde_decode:
 
 .. autofunction:: datasette.utils.tilde_decode
+
+.. _internals_utils_call_with_supported_arguments:
+
+call_with_supported_arguments(fn, **kwargs)
+-------------------------------------------
+
+Call ``fn``, passing it only those keyword arguments that match its function signature. This implements a dependency injection pattern - the caller provides all available arguments, and the function receives only the ones it declares as parameters.
+
+This is useful in plugins that want to define callback functions that only declare the arguments they need. For example:
+
+.. code-block:: python
+
+    from datasette.utils import call_with_supported_arguments
+
+
+    def my_callback(request, datasette): ...
+
+
+    # This will pass only request and datasette, ignoring other kwargs:
+    call_with_supported_arguments(
+        my_callback,
+        request=request,
+        datasette=datasette,
+        database=database,
+        table=table,
+    )
+
+.. autofunction:: datasette.utils.call_with_supported_arguments
+
+.. _internals_utils_async_call_with_supported_arguments:
+
+await async_call_with_supported_arguments(fn, **kwargs)
+-------------------------------------------------------
+
+Async version of :ref:`call_with_supported_arguments <internals_utils_call_with_supported_arguments>`. Use this for ``async def`` callback functions.
+
+.. autofunction:: datasette.utils.async_call_with_supported_arguments
 
 .. _internals_tracer:
 
