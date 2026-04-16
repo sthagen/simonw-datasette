@@ -59,6 +59,7 @@ async def test_database_page(ds_client):
     response = await ds_client.get("/fixtures.json")
     assert response.status_code == 200
     data = response.json()
+    assert data["ok"] is True
     assert data["database"] == "fixtures"
 
     # Build lookup for easier assertions
@@ -553,8 +554,7 @@ async def test_actions_json(ds_client):
     original_root_enabled = ds_client.ds.root_enabled
     try:
         ds_client.ds.root_enabled = True
-        cookies = {"ds_actor": ds_client.actor_cookie({"id": "root"})}
-        response = await ds_client.get("/-/actions.json", cookies=cookies)
+        response = await ds_client.get("/-/actions.json", actor={"id": "root"})
         data = response.json()
     finally:
         ds_client.ds.root_enabled = original_root_enabled

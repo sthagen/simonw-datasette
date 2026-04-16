@@ -17,6 +17,8 @@ def ds_write(tmp_path_factory):
         db.execute(
             "create table docs (id integer primary key, title text, score float, age integer)"
         )
+    db1.close()
+    db2.close()
     ds = Datasette([db_path], immutables=[db_path_immutable])
     ds.root_enabled = True
     yield ds
@@ -40,6 +42,41 @@ def _headers(token):
         "Authorization": "Bearer {}".format(token),
         "Content-Type": "application/json",
     }
+
+
+@pytest.mark.asyncio
+async def test_api_explorer_upsert_example_json(ds_write):
+    response = await ds_write.client.get("/-/api", actor={"id": "root"})
+    assert response.status_code == 200
+    import urllib.parse
+
+    text = urllib.parse.unquote_plus(response.text)
+    upsert_idx = text.index("/data/docs/-/upsert")
+    upsert_chunk = text[upsert_idx : upsert_idx + 500]
+    assert '"id": "<id (primary key)>"' in upsert_chunk
+    assert '"title": "<title>"' in upsert_chunk
+    assert '"score": "<score>"' in upsert_chunk
+    assert '"age": "<age>"' in upsert_chunk
+
+
+@pytest.mark.asyncio
+async def test_api_explorer_upsert_example_json_rowid_table(tmp_path_factory):
+    db_path = str(tmp_path_factory.mktemp("dbs") / "data.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("create table things (title text, score float)")
+    conn.close()
+    ds = Datasette([db_path])
+    ds.root_enabled = True
+    response = await ds.client.get("/-/api", actor={"id": "root"})
+    assert response.status_code == 200
+    import urllib.parse
+
+    text = urllib.parse.unquote_plus(response.text)
+    upsert_idx = text.index("/data/things/-/upsert")
+    upsert_chunk = text[upsert_idx : upsert_idx + 500]
+    assert '"rowid": "<rowid (primary key)>"' in upsert_chunk
+    assert '"title": "<title>"' in upsert_chunk
+    assert '"score": "<score>"' in upsert_chunk
 
 
 @pytest.mark.asyncio
@@ -296,6 +333,14 @@ async def test_insert_rows(ds_write, return_rows):
             None,
             400,
             ['Row 0 is missing primary key column(s): "id"'],
+        ),
+        # null primary key
+        (
+            "/data/docs/-/upsert",
+            {"rows": [{"id": None, "title": "Null PK"}]},
+            None,
+            400,
+            ['Row 0 has null primary key column(s): "id"'],
         ),
         # Upsert does not support ignore or replace
         (

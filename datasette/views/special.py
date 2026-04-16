@@ -813,9 +813,18 @@ class ApiExplorerView(BaseView):
                                 "json": {
                                     "rows": [
                                         {
-                                            column: None
-                                            for column in await db.table_columns(table)
-                                            if column not in pks
+                                            column: "<{}{}>".format(
+                                                column,
+                                                (
+                                                    " (primary key)"
+                                                    if column in (pks or ["rowid"])
+                                                    else ""
+                                                ),
+                                            )
+                                            for column in (
+                                                (["rowid"] if not pks else [])
+                                                + await db.table_columns(table)
+                                            )
                                         }
                                     ]
                                 },

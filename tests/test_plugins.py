@@ -422,9 +422,9 @@ def test_plugins_async_template_function(restore_working_directory):
             .select("pre.extra_from_awaitable_function")[0]
             .text
         )
-        expected = (
-            sqlite3.connect(":memory:").execute("select sqlite_version()").fetchone()[0]
-        )
+        conn = sqlite3.connect(":memory:")
+        expected = conn.execute("select sqlite_version()").fetchone()[0]
+        conn.close()
         assert expected == extra_from_awaitable_function
 
 
@@ -466,6 +466,7 @@ def view_names_client(tmp_path_factory):
     db_path = str(tmpdir / "fixtures.db")
     conn = sqlite3.connect(db_path)
     conn.executescript(TABLES)
+    conn.close()
     return _TestClient(
         Datasette([db_path], template_dir=str(templates), plugins_dir=str(plugins))
     )
@@ -812,21 +813,25 @@ def test_hook_register_routes_override():
 
 
 def test_hook_register_routes_post(app_client):
-    response = app_client.post("/post/", {"this is": "post data"}, csrftoken_from=True)
+    response = app_client.post("/post/", {"this is": "post data"})
     assert response.status_code == 200
-    assert "csrftoken" in response.json
     assert response.json["this is"] == "post data"
 
 
 def test_hook_register_routes_csrftoken(restore_working_directory, tmpdir_factory):
+    # csrftoken() is a legacy compatibility shim that returns a
+    # per-request random value - it is no longer used for CSRF enforcement.
     templates = tmpdir_factory.mktemp("templates")
     (templates / "csrftoken_form.html").write_text(
-        "CSRFTOKEN: {{ csrftoken() }}", "utf-8"
+        "CSRFTOKEN:{{ csrftoken() }}:END", "utf-8"
     )
     with make_app_client(template_dir=templates) as client:
         response = client.get("/csrftoken-form/")
-        expected_token = client.ds._last_request.scope["csrftoken"]()
-        assert f"CSRFTOKEN: {expected_token}" == response.text
+        assert response.text.startswith("CSRFTOKEN:")
+        assert response.text.endswith(":END")
+        token = response.text[len("CSRFTOKEN:") : -len(":END")]
+        assert len(token) >= 20
+        assert "ds_csrftoken" not in response.cookies
 
 
 @pytest.mark.asyncio
@@ -1020,7 +1025,7 @@ async def test_hook_view_actions(ds_client):
     assert get_actions_links(response.text) == []
     response_2 = await ds_client.get(
         "/fixtures/simple_view",
-        cookies={"ds_actor": ds_client.actor_cookie({"id": "bob"})},
+        actor={"id": "bob"},
     )
     assert ">View actions<" in response_2.text
     assert sorted(
@@ -1084,7 +1089,7 @@ async def test_hook_row_actions(ds_client):
 
     response_2 = await ds_client.get(
         "/fixtures/facet_cities/1",
-        cookies={"ds_actor": ds_client.actor_cookie({"id": "sam"})},
+        actor={"id": "sam"},
     )
     assert get_actions_links(response_2.text) == [
         {
@@ -1112,9 +1117,7 @@ async def test_hook_homepage_actions(ds_client):
     # No button for anonymous users
     assert "<span>Homepage actions</span>" not in response.text
     # Signed in user gets an action
-    response2 = await ds_client.get(
-        "/", cookies={"ds_actor": ds_client.actor_cookie({"id": "troy"})}
-    )
+    response2 = await ds_client.get("/", actor={"id": "troy"})
     assert "<span>Homepage actions</span>" in response2.text
     assert get_actions_links(response2.text) == [
         {
@@ -1123,31 +1126,6 @@ async def test_hook_homepage_actions(ds_client):
             "description": None,
         },
     ]
-
-
-def test_hook_skip_csrf(app_client):
-    cookie = app_client.actor_cookie({"id": "test"})
-    csrf_response = app_client.post(
-        "/post/",
-        post_data={"this is": "post data"},
-        csrftoken_from=True,
-        cookies={"ds_actor": cookie},
-    )
-    assert csrf_response.status_code == 200
-    missing_csrf_response = app_client.post(
-        "/post/", post_data={"this is": "post data"}, cookies={"ds_actor": cookie}
-    )
-    assert missing_csrf_response.status_code == 403
-    # But "/skip-csrf" should allow
-    allow_csrf_response = app_client.post(
-        "/skip-csrf", post_data={"this is": "post data"}, cookies={"ds_actor": cookie}
-    )
-    assert allow_csrf_response.status_code == 405  # Method not allowed
-    # /skip-csrf-2 should not
-    second_missing_csrf_response = app_client.post(
-        "/skip-csrf-2", post_data={"this is": "post data"}, cookies={"ds_actor": cookie}
-    )
-    assert second_missing_csrf_response.status_code == 403
 
 
 def _extract_commands(output):
