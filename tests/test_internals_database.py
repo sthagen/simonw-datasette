@@ -4,6 +4,7 @@ Tests for the datasette.database.Database class
 
 from datasette.app import Datasette
 from datasette.database import Database, Results, MultipleValues
+from datasette.database import DatasetteClosedError
 from datasette.utils.sqlite import sqlite3, sqlite_version
 from datasette.utils import Column
 import pytest
@@ -540,6 +541,37 @@ async def test_execute_write_fn_exception(db):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("param_name", ["conn", "connection", "db", "c"])
+async def test_execute_write_fn_accepts_any_single_param_name(db, param_name):
+    # Plugins historically relied on the fact that the callback was invoked
+    # positionally, so any parameter name worked. Preserve that contract.
+    scope = {}
+    exec(
+        "def write_fn({0}):\n"
+        "    return {0}.execute('select 1 + 1').fetchone()[0]".format(param_name),
+        scope,
+    )
+    write_fn = scope["write_fn"]
+    result = await db.execute_write_fn(write_fn)
+    assert result == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_write_fn_with_track_event(db):
+    # When the callback declares track_event it still receives both args
+    # via dependency injection.
+    seen = []
+
+    def write_fn(conn, track_event):
+        seen.append(track_event)
+        return conn.execute("select 1 + 1").fetchone()[0]
+
+    result = await db.execute_write_fn(write_fn)
+    assert result == 2
+    assert len(seen) == 1 and callable(seen[0])
+
+
+@pytest.mark.asyncio
 @pytest.mark.timeout(1)
 async def test_execute_write_fn_connection_exception(tmpdir, app_client):
     path = str(tmpdir / "immutable.db")
@@ -802,3 +834,58 @@ def test_repr_temp_disk(app_client):
     assert isinstance(db.size, int)
     assert isinstance(db.mtime_ns, int)
     db.close()
+
+
+@pytest.mark.asyncio
+async def test_database_close_shuts_down_write_thread(tmpdir):
+    path = str(tmpdir / "dbclose.db")
+    conn = sqlite3.connect(path)
+    conn.execute("create table t (id integer primary key)")
+    conn.close()
+    ds = Datasette([path])
+    db = ds.get_database("dbclose")
+    # Trigger write thread creation
+    await db.execute_write("insert into t (id) values (1)")
+    assert db._write_thread is not None
+    assert db._write_thread.is_alive()
+    db.close()
+    # Wait briefly for the thread to exit — the sentinel should cause it to return.
+    db._write_thread.join(timeout=5)
+    assert not db._write_thread.is_alive()
+    ds._internal_database.close()
+
+
+@pytest.mark.asyncio
+async def test_database_close_raises_on_further_use(tmpdir):
+    path = str(tmpdir / "closed.db")
+    conn = sqlite3.connect(path)
+    conn.execute("create table t (id integer primary key)")
+    conn.close()
+    ds = Datasette([path])
+    db = ds.get_database("closed")
+    await db.execute("select 1")
+    db.close()
+    with pytest.raises(DatasetteClosedError):
+        await db.execute("select 1")
+    with pytest.raises(DatasetteClosedError):
+        await db.execute_write("insert into t (id) values (1)")
+    with pytest.raises(DatasetteClosedError):
+        await db.execute_fn(lambda conn: conn.execute("select 1").fetchone())
+    with pytest.raises(DatasetteClosedError):
+        await db.execute_write_fn(lambda conn: conn.execute("select 1"))
+    ds._internal_database.close()
+
+
+@pytest.mark.asyncio
+async def test_database_close_is_idempotent(tmpdir):
+    path = str(tmpdir / "idemp.db")
+    conn = sqlite3.connect(path)
+    conn.execute("create table t (id integer primary key)")
+    conn.close()
+    ds = Datasette([path])
+    db = ds.get_database("idemp")
+    await db.execute_write("insert into t (id) values (1)")
+    db.close()
+    # Second call should be a no-op, not raise
+    db.close()
+    ds._internal_database.close()
