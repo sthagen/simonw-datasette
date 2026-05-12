@@ -13,7 +13,7 @@ Changelog
 - Table headers and column options are now visible even if a table contains zero rows. (:issue:`2701`)
 - Fixed bug with display of column actions dialog on Mobile Safari. (:issue:`2708`)
 - Fixed bug where tests could crash with a segfault due to a race condition between ``Datasette.close()`` and ``Datasette.close()``. (:issue:`2709`)
--
+
 .. _v1_0_a28:
 
 1.0a28 (2026-04-16)
