@@ -58,7 +58,7 @@ from .views.special import (
     AllowedResourcesView,
     PermissionRulesView,
     PermissionCheckView,
-    TablesView,
+    JumpView,
     InstanceSchemaView,
     DatabaseSchemaView,
     TableSchemaView,
@@ -614,15 +614,36 @@ class Datasette:
                 "select database_name, schema_version from catalog_databases"
             )
         }
-        # Delete stale entries for databases that are no longer attached
-        stale_databases = set(current_schema_versions.keys()) - set(
-            self.databases.keys()
+        catalog_table_names = (
+            "catalog_columns",
+            "catalog_foreign_keys",
+            "catalog_indexes",
+            "catalog_views",
+            "catalog_tables",
+            "catalog_databases",
         )
-        for stale_db_name in stale_databases:
-            await internal_db.execute_write(
-                "DELETE FROM catalog_databases WHERE database_name = ?",
-                [stale_db_name],
+        # Delete stale entries for databases that are no longer attached
+        catalog_database_names = set(current_schema_versions.keys())
+        for table in catalog_table_names[:-1]:
+            catalog_database_names.update(
+                row["database_name"]
+                for row in await internal_db.execute(
+                    "select distinct database_name from {}".format(table)
+                )
+                if row["database_name"] is not None
             )
+        stale_databases = catalog_database_names - set(self.databases.keys())
+        if stale_databases:
+
+            def delete_stale_database_catalog(conn):
+                for stale_db_name in stale_databases:
+                    for table in catalog_table_names:
+                        conn.execute(
+                            "DELETE FROM {} WHERE database_name = ?".format(table),
+                            [stale_db_name],
+                        )
+
+            await internal_db.execute_write_fn(delete_stale_database_catalog)
         for database_name, db in self.databases.items():
             schema_version = (await db.execute("PRAGMA schema_version")).first()[0]
             # Compare schema versions to see if we should skip it
@@ -1198,13 +1219,24 @@ class Datasette:
 
         return db_plugin_config
 
+    def static_hash(self, filename):
+        if not hasattr(self, "_static_hashes"):
+            self._static_hashes = {}
+        path = os.path.join(str(app_root), "datasette/static", filename)
+        signature = (os.path.getmtime(path), os.path.getsize(path))
+        cached = self._static_hashes.get(filename)
+        if cached and cached["signature"] == signature:
+            return cached["hash"]
+        with open(path) as fp:
+            static_hash = hashlib.sha1(fp.read().encode("utf8")).hexdigest()[:6]
+        self._static_hashes[filename] = {
+            "signature": signature,
+            "hash": static_hash,
+        }
+        return static_hash
+
     def app_css_hash(self):
-        if not hasattr(self, "_app_css_hash"):
-            with open(os.path.join(str(app_root), "datasette/static/app.css")) as fp:
-                self._app_css_hash = hashlib.sha1(fp.read().encode("utf8")).hexdigest()[
-                    :6
-                ]
-        return self._app_css_hash
+        return self.static_hash("app.css")
 
     async def get_canned_queries(self, database_name, actor):
         queries = {}
@@ -2201,8 +2233,8 @@ class Datasette:
             r"/-/api$",
         )
         add_route(
-            TablesView.as_view(self),
-            r"/-/tables(\.(?P<format>json))?$",
+            JumpView.as_view(self),
+            r"/-/jump(\.(?P<format>json))?$",
         )
         add_route(
             InstanceSchemaView.as_view(self),

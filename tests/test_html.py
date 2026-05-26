@@ -242,6 +242,22 @@ def test_query_page_truncates():
 
 
 @pytest.mark.asyncio
+async def test_query_page_with_no_sql(ds_client):
+    # https://github.com/simonw/datasette/issues/2743
+    response = await ds_client.get("/fixtures/-/query")
+    assert response.status_code == 200
+    assert '<textarea id="sql-editor" name="sql"' in response.text
+    assert 'class="rows-and-columns"' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_query_csv_with_no_sql_is_400(ds_client):
+    # https://github.com/simonw/datasette/issues/2743
+    response = await ds_client.get("/fixtures/-/query.csv")
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "path,expected_classes",
     [
@@ -994,7 +1010,7 @@ def test_edit_sql_link_not_shown_if_user_lacks_permission(has_permission):
     [
         (None, None, None),
         ("test", None, ["/-/permissions"]),
-        ("root", ["/-/permissions", "/-/allow-debug"], None),
+        ("root", None, ["/-/permissions", "/-/allow-debug"]),
     ],
 )
 async def test_navigation_menu_links(
@@ -1008,10 +1024,26 @@ async def test_navigation_menu_links(
         kwargs["actor"] = {"id": actor_id}
     html = (await ds_client.get("/", **kwargs)).text
     soup = Soup(html, "html.parser")
-    details = soup.find("nav").find("details")
+    details = soup.find("nav").find("details", {"class": "nav-menu"})
+    assert details is not None
+    search_button = details.find("button", {"data-navigation-search-open": True})
+    assert search_button is not None
+    assert search_button.text.strip() == "Jump to... /"
+    assert search_button.find("kbd", {"class": "keyboard-shortcut"}).text == "/"
+    assert search_button.find("kbd")["aria-hidden"] == "true"
+    assert (
+        search_button.find("kbd")["title"]
+        == "Keyboard shortcut: press / to open Jump to"
+    )
+    navigation_search_script = soup.find(
+        "script", {"src": re.compile(r"navigation-search\.js")}
+    )
+    assert navigation_search_script["src"] == "/-/static/navigation-search.js"
+    assert details.find("li").find("button") == search_button
     if not actor_id:
-        # Should not show a menu
-        assert details is None
+        # The app menu is always visible, but anonymous users do not see logout
+        # or debug links.
+        assert details.find("form") is None
         return
     # They are logged in: should show a menu
     assert details is not None

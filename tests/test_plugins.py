@@ -1,7 +1,6 @@
 from bs4 import BeautifulSoup as Soup
 from .fixtures import (
     make_app_client,
-    TABLES,
     TEMP_PLUGIN_SECRET_FILE,
     PLUGINS_DIR,
     TestClient as _TestClient,
@@ -9,6 +8,7 @@ from .fixtures import (
 from click.testing import CliRunner
 from datasette.app import Datasette
 from datasette import cli, hookimpl
+from datasette.fixtures import TABLES
 from datasette.filters import FilterArguments
 from datasette.plugins import get_plugins, DEFAULT_PLUGINS, pm
 from datasette.permissions import PermissionSQL, Action
@@ -41,6 +41,11 @@ def test_plugin_hooks_have_tests(plugin_hook):
         if plugin_hook in test:
             ok = True
     assert ok, f"Plugin hook is missing tests: {plugin_hook}"
+
+
+def test_hook_jump_items_sql():
+    # Detailed behavior is covered in tests/test_jump.py.
+    assert "jump_items_sql" in dir(pm.hook)
 
 
 @pytest.mark.asyncio
