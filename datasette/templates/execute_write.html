@@ -40,6 +40,26 @@
     border-radius: 0.25rem;
     min-width: 13rem;
 }
+.execute-write-submit-row {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.75rem;
+}
+.execute-write-submit-row [hidden] {
+    display: none;
+}
+form.sql.core input[data-execute-write-submit]:disabled {
+    background: #d0d7de;
+    border-color: #b6c0cc;
+    color: #5f6975;
+    cursor: not-allowed;
+    opacity: 1;
+}
+.execute-write-disabled-reason {
+    color: #4f5b6d;
+    font-size: 0.85rem;
+}
 </style>
 {% include "_execute_write_analysis_styles.html" %}
 {% include "_sql_parameter_styles.html" %}
@@ -69,16 +89,18 @@
                 <p class="execute-write-template-controls">
                     <label for="execute-write-template-table">Table</label>
                     <select id="execute-write-template-table">
-                        {% for table_name, columns in write_template_tables|dictsort %}
-                            <option value="{{ table_name }}">{{ table_name }}</option>
+                        {% for table_name, table in write_template_tables|dictsort %}
+                            <option value="{{ table_name }}"{% for operation, template_sql in table.templates|dictsort %} data-template-{{ operation }}-sql="{{ template_sql }}"{% endfor %}>{{ table_name }}</option>
                         {% endfor %}
                     </select>
-                    <button type="button" data-sql-template="insert">Insert row</button>
-                    <button type="button" data-sql-template="update">Update rows</button>
-                    <button type="button" data-sql-template="delete">Delete rows</button>
+                    {% for operation in write_template_operations %}
+                        <button type="button" data-sql-template="{{ operation.name }}">{{ operation.label }}</button>
+                    {% endfor %}
                 </p>
             </details>
         </div>
+    {% else %}
+        <p class="message-warning execute-write-template-unavailable">You don't currently have permission to insert, edit or delete from any tables.</p>
     {% endif %}
 
     <p class="sql-editor"><textarea id="sql-editor" name="sql"{% if sql %} style="height: {{ sql.split("\n")|length + 2 }}em"{% endif %}>{{ sql }}</textarea></p>
@@ -119,9 +141,10 @@
         {% endif %}
     </div>
 
-    <p>
-        <input type="submit" value="Execute" data-execute-write-submit{% if execute_disabled %} disabled{% endif %}>
-        {% if save_query_base_url %}<a href="{{ save_query_url or save_query_base_url }}" class="save-query" data-save-query-link data-save-query-base-url="{{ save_query_base_url }}"{% if not save_query_url %} hidden{% endif %}>Save this query</a>{% endif %}
+    <p class="execute-write-submit-row"{% if save_query_base_url %} data-save-query-base-url="{{ save_query_base_url }}"{% endif %}>
+        <input type="submit" value="Execute" data-execute-write-submit aria-describedby="execute-write-disabled-reason"{% if execute_disabled %} disabled{% endif %}>
+        <span id="execute-write-disabled-reason" class="execute-write-disabled-reason" data-execute-write-disabled-reason aria-live="polite"{% if not execute_disabled_reason %} hidden{% endif %}>{{ execute_disabled_reason or "" }}</span>
+        {% if save_query_url %}<a href="{{ save_query_url }}" class="save-query" data-save-query-link>Save this query</a>{% endif %}
     </p>
 </form>
 
@@ -143,25 +166,55 @@ window.addEventListener("DOMContentLoaded", () => {
   const submitButton = form
     ? form.querySelector("[data-execute-write-submit]")
     : null;
-  const saveQueryLink = form
+  const submitDisabledReason = form
+    ? form.querySelector("[data-execute-write-disabled-reason]")
+    : null;
+  const submitRow = form
+    ? form.querySelector(".execute-write-submit-row")
+    : null;
+  let saveQueryLink = form
     ? form.querySelector("[data-save-query-link]")
     : null;
 
+  function updateSubmitState(data) {
+    if (submitButton) {
+      submitButton.disabled = data.execute_disabled;
+    }
+    if (!submitDisabledReason) {
+      return;
+    }
+    const reason = data.execute_disabled_reason || "";
+    submitDisabledReason.textContent = reason;
+    submitDisabledReason.hidden = !reason;
+  }
+
   function updateSaveQueryLink(data) {
-    if (!saveQueryLink) {
+    if (!submitRow || !submitRow.dataset.saveQueryBaseUrl) {
       return;
     }
     const sql = window.editor
       ? window.editor.state.doc.toString()
       : executeWriteSqlInput.value;
     if (!sql.trim() || !data.ok || data.execute_disabled) {
-      saveQueryLink.hidden = true;
+      if (saveQueryLink) {
+        saveQueryLink.remove();
+        saveQueryLink = null;
+      }
       return;
     }
-    const url = new URL(saveQueryLink.dataset.saveQueryBaseUrl, window.location.href);
+    if (!saveQueryLink) {
+      saveQueryLink = document.createElement("a");
+      saveQueryLink.className = "save-query";
+      saveQueryLink.setAttribute("data-save-query-link", "");
+      saveQueryLink.textContent = "Save this query";
+      submitRow.appendChild(saveQueryLink);
+    }
+    const url = new URL(
+      submitRow.dataset.saveQueryBaseUrl,
+      window.location.href
+    );
     url.searchParams.set("sql", sql);
     saveQueryLink.href = url.pathname + url.search + url.hash;
-    saveQueryLink.hidden = false;
   }
 
   window.datasetteSqlParameters.setupSqlParameterRefresh({
@@ -170,9 +223,7 @@ window.addEventListener("DOMContentLoaded", () => {
     allowExpand: true,
     onData(data) {
       window.datasetteSqlAnalysis.renderAnalysis(analysisSection, data);
-      if (submitButton) {
-        submitButton.disabled = data.execute_disabled;
-      }
+      updateSubmitState(data);
       updateSaveQueryLink(data);
     },
     onError(error) {
@@ -180,12 +231,11 @@ window.addEventListener("DOMContentLoaded", () => {
         analysis_error: error.message,
         analysis_rows: [],
       });
-      if (submitButton) {
-        submitButton.disabled = true;
-      }
-      if (saveQueryLink) {
-        saveQueryLink.hidden = true;
-      }
+      updateSubmitState({
+        execute_disabled: true,
+        execute_disabled_reason: error.message,
+      });
+      updateSaveQueryLink({ ok: false, execute_disabled: true });
     },
   });
 });
@@ -194,119 +244,43 @@ window.addEventListener("DOMContentLoaded", () => {
 {% if write_template_tables %}
 <script>
 window.addEventListener("DOMContentLoaded", () => {
-  const tableColumns = {{ write_template_tables|tojson(2) }};
   const tableSelect = document.querySelector("#execute-write-template-table");
   const templateButtons = document.querySelectorAll("[data-sql-template]");
 
-  function quoteIdentifier(identifier) {
-    return `"${identifier.replace(/"/g, '""')}"`;
+  function dataKey(operation) {
+    return `template${operation.charAt(0).toUpperCase()}${operation.slice(1)}Sql`;
   }
 
-  function parameterNames(columns) {
-    const seen = new Set();
-    const names = {};
-    columns.forEach((column) => {
-      let base = column
-        .toLowerCase()
-        .replace(/[^a-z0-9_]+/g, "_")
-        .replace(/^_+|_+$/g, "");
-      if (!base) {
-        base = "value";
-      }
-      if (/^[0-9]/.test(base)) {
-        base = `p_${base}`;
-      }
-      let name = base;
-      let index = 2;
-      while (seen.has(name)) {
-        name = `${base}_${index}`;
-        index += 1;
-      }
-      seen.add(name);
-      names[column] = name;
+  function selectedOption() {
+    return tableSelect ? tableSelect.options[tableSelect.selectedIndex] : null;
+  }
+
+  function templateSql(operation) {
+    const option = selectedOption();
+    return option ? option.dataset[dataKey(operation)] || "" : "";
+  }
+
+  function updateTemplateButtons() {
+    templateButtons.forEach((button) => {
+      button.hidden = !templateSql(button.dataset.sqlTemplate);
     });
-    return names;
-  }
-
-  function preferredWhereColumn(table, columns) {
-    const lowerTableId = `${table.toLowerCase()}_id`;
-    return (
-      columns.find((column) => column.toLowerCase() === "id") ||
-      columns.find((column) => column.toLowerCase() === lowerTableId) ||
-      columns[0]
-    );
-  }
-
-  function insertSql(table, columns) {
-    const names = parameterNames(columns);
-    return [
-      `insert into ${quoteIdentifier(table)} (`,
-      columns.map((column) => `  ${quoteIdentifier(column)}`).join(",\n"),
-      ")",
-      "values (",
-      columns.map((column) => `  :${names[column]}`).join(",\n"),
-      ")",
-    ].join("\n");
-  }
-
-  function updateSql(table, columns) {
-    const names = parameterNames(columns);
-    const whereColumn = preferredWhereColumn(table, columns);
-    const setColumns = columns.filter((column) => column !== whereColumn);
-    if (!setColumns.length) {
-      return [
-        `update ${quoteIdentifier(table)}`,
-        `set ${quoteIdentifier(whereColumn)} = :new_${names[whereColumn]}`,
-        `where ${quoteIdentifier(whereColumn)} = :${names[whereColumn]}`,
-      ].join("\n");
-    }
-    return [
-      `update ${quoteIdentifier(table)}`,
-      "set " +
-        setColumns
-          .map((column, index) => {
-            const indent = index ? "    " : "";
-            return `${indent}${quoteIdentifier(column)} = :${names[column]}`;
-          })
-          .join(",\n"),
-      `where ${quoteIdentifier(whereColumn)} = :${names[whereColumn]}`,
-    ].join("\n");
-  }
-
-  function deleteSql(table, columns) {
-    const names = parameterNames(columns);
-    const whereColumn = preferredWhereColumn(table, columns);
-    return [
-      `delete from ${quoteIdentifier(table)}`,
-      `where ${quoteIdentifier(whereColumn)} = :${names[whereColumn]}`,
-    ].join("\n");
-  }
-
-  function templateSql(operation, table, columns) {
-    if (operation === "insert") {
-      return insertSql(table, columns);
-    }
-    if (operation === "update") {
-      return updateSql(table, columns);
-    }
-    return deleteSql(table, columns);
   }
 
   templateButtons.forEach((button) => {
     button.addEventListener("click", () => {
-      const table = tableSelect.value;
-      const columns = tableColumns[table] || [];
-      if (!columns.length) {
+      const sql = templateSql(button.dataset.sqlTemplate);
+      if (!sql) {
         return;
       }
       const url = new URL(window.location.href);
-      url.searchParams.set(
-        "sql",
-        templateSql(button.dataset.sqlTemplate, table, columns)
-      );
+      url.searchParams.set("sql", sql);
       window.location.href = url.toString();
     });
   });
+  if (tableSelect) {
+    tableSelect.addEventListener("change", updateTemplateButtons);
+  }
+  updateTemplateButtons();
 });
 </script>
 {% endif %}

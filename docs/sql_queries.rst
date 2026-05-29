@@ -7,6 +7,8 @@ Datasette treats SQLite database files as read-only and immutable. This means it
 
 The easiest way to execute custom SQL against Datasette is through the web UI. The database index page includes a SQL editor that lets you run any SELECT query you like. You can also construct queries using the filter interface on the tables page, then click "View and edit SQL" to open that query in the custom SQL editor.
 
+For mutable databases, actors with the appropriate permissions can use the :ref:`write SQL page <pages_execute_write>` to execute SQL statements that insert, update or delete rows.
+
 Note that this interface is only available if the :ref:`actions_execute_sql` permission is allowed. See :ref:`authentication_permissions_execute_sql`.
 
 Any Datasette SQL query is reflected in the URL of the page, allowing you to bookmark them, share them with others and navigate through previous queries using your browser back button.
@@ -140,7 +142,7 @@ Datasette stores both configured queries and user-created queries in the ``queri
 
 Stored queries created by users default to private. Private stored queries can only be viewed, updated or deleted by the actor that created them. Broad ``view-query``, ``update-query`` or ``delete-query`` permission grants still do not allow other actors to access another actor's private stored queries.
 
-Stored queries created by users are untrusted. This means they execute using the permissions of the actor who runs them, as if that actor had pasted the SQL into the regular custom SQL interface or write SQL interface. Read-only stored queries require ``execute-sql``. Writable stored queries require ``execute-write-sql`` plus the relevant table-level write permissions.
+Stored queries created by users are untrusted. This means they execute using the permissions of the actor who runs them, as if that actor had pasted the SQL into the regular custom SQL interface or write SQL interface. Read-only stored queries require ``execute-sql``. Writable stored queries require ``execute-write-sql`` plus the relevant table-level write permissions. SQL functions are allowed and are not separately restricted by Datasette permissions.
 
 .. _trusted_stored_queries:
 .. _trusted_saved_queries:

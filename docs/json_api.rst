@@ -50,6 +50,25 @@ The ``"truncated"`` key lets you know if the query was truncated. This can happe
 
 For table pages, an additional key ``"next"`` may be present. This indicates that the next page in the pagination set can be retrieved using ``?_next=VALUE``.
 
+.. _json_api_custom_sql:
+
+Executing custom SQL
+--------------------
+
+Actors with the :ref:`actions_execute_sql` permission can execute read-only SQL against a database using ``/-/query.json``:
+
+::
+
+    GET /<database>/-/query.json?sql=select+*+from+dogs
+
+Values for named SQL parameters can be provided as additional query string parameters:
+
+::
+
+    GET /<database>/-/query.json?sql=select+*+from+dogs+where+name=:name&name=Cleo
+
+The response uses the same default representation described above.
+
 .. _json_api_shapes:
 
 Different shapes
@@ -504,6 +523,70 @@ The JSON write API
 ------------------
 
 Datasette provides a write API for JSON data. This is a POST-only API that requires an authenticated API token, see :ref:`CreateTokenView`. The token will need to have the specified :ref:`authentication_permissions`.
+
+.. _ExecuteWriteView:
+
+Executing write SQL
+~~~~~~~~~~~~~~~~~~~
+
+Actors with the :ref:`actions_execute_write_sql` permission can execute arbitrary writable SQL against a mutable database using ``/-/execute-write``.
+
+::
+
+    POST /<database>/-/execute-write
+    Content-Type: application/json
+    Authorization: Bearer dstok_<rest-of-token>
+
+The request body must include a ``"sql"`` string. Named SQL parameters can be provided using the optional ``"params"`` object:
+
+.. code-block:: json
+
+    {
+        "sql": "insert into dogs (name) values (:name)",
+        "params": {
+            "name": "Cleo"
+        }
+    }
+
+The SQL must be writable. Read-only ``select`` queries should use the regular :ref:`custom SQL query JSON API <json_api_custom_sql>` instead.
+
+Datasette analyzes the SQL before executing it. The actor must have ``execute-write-sql`` permission for the database, and must also have any permissions required by the operations in the SQL. For example, inserts and updates against a table require ``insert-row``, ``update-row`` and ``delete-row`` permissions for that table. Reads performed as part of the write, such as ``insert into dogs select ... from other_table``, require ``view-table`` permission on the source table. Schema changes require ``create-table``, ``alter-table`` or ``drop-table`` permissions as appropriate.
+
+Unsupported SQL operations are rejected by default. ``VACUUM`` is not allowed in arbitrary write SQL, and writes to SQLite virtual tables or shadow tables are rejected. SQL functions are allowed and are not separately restricted by Datasette permissions.
+
+A successful response includes a message, the SQLite ``rowcount`` and a summary of the operations that were executed:
+
+The shape of the ``"analysis"`` block is not yet considered a stable API and may change in future Datasette releases.
+
+.. code-block:: json
+
+    {
+        "ok": true,
+        "message": "Query executed, 1 row affected",
+        "rowcount": 1,
+        "analysis": [
+            {
+                "operation": "insert",
+                "database": "data",
+                "table": "dogs",
+                "required_permission": "insert-row, update-row, delete-row",
+                "source": null
+            }
+        ]
+    }
+
+If SQLite reports ``-1`` for the row count, the message will be ``"Query executed"``.
+
+Errors use the standard Datasette error format:
+
+.. code-block:: json
+
+    {
+        "ok": false,
+        "errors": [
+            "Permission denied: need execute-write-sql"
+        ]
+    }
 
 .. _TableInsertView:
 
