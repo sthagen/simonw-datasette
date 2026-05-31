@@ -60,9 +60,11 @@ class DatabaseView(View):
 
         sql = (request.args.get("sql") or "").strip()
         if sql:
-            redirect_url = "/" + request.url_vars.get("database") + "/-/query"
+            redirect_url = datasette.urls.database(database) + "/-/query"
             if request.url_vars.get("format"):
-                redirect_url += "." + request.url_vars.get("format")
+                redirect_url = path_with_format(
+                    path=redirect_url, format=request.url_vars.get("format")
+                )
             redirect_url += "?" + request.query_string
             response = Response.redirect(redirect_url)
             if datasette.cors:
@@ -157,7 +159,13 @@ class DatabaseView(View):
         assert format_ == "html"
         alternate_url_json = datasette.absolute_url(
             request,
-            datasette.urls.path(path_with_format(request=request, format="json")),
+            datasette.urls.path(
+                path_with_format(
+                    request=request,
+                    path=request.scope.get("route_path"),
+                    format="json",
+                )
+            ),
         )
         templates = (f"database-{to_css_class(database)}.html", "database.html")
         environment = datasette.get_jinja_environment(request)
@@ -744,7 +752,13 @@ class QueryView(View):
             template = environment.select_template(templates)
             alternate_url_json = datasette.absolute_url(
                 request,
-                datasette.urls.path(path_with_format(request=request, format="json")),
+                datasette.urls.path(
+                    path_with_format(
+                        request=request,
+                        path=request.scope.get("route_path"),
+                        format="json",
+                    )
+                ),
             )
             data = {}
             headers.update(
@@ -776,7 +790,11 @@ class QueryView(View):
                 it_can_render = await await_me_maybe(it_can_render)
                 if it_can_render:
                     renderers[key] = datasette.urls.path(
-                        path_with_format(request=request, format=key)
+                        path_with_format(
+                            request=request,
+                            path=request.scope.get("route_path"),
+                            format=key,
+                        )
                     )
 
             allow_execute_sql = await datasette.allowed(
@@ -905,7 +923,10 @@ class QueryView(View):
                         renderers=renderers,
                         url_csv=datasette.urls.path(
                             path_with_format(
-                                request=request, format="csv", extra_qs={"_size": "max"}
+                                request=request,
+                                path=request.scope.get("route_path"),
+                                format="csv",
+                                extra_qs={"_size": "max"},
                             )
                         ),
                         show_hide_hidden=markupsafe.Markup(show_hide_hidden),
