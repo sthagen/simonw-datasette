@@ -235,6 +235,972 @@ query string arguments:
 
     Only available if the :ref:`setting_trace_debug` setting is enabled.
 
+.. _json_api_extra:
+
+Expanding JSON responses
+------------------------
+
+Table, row and query JSON responses can be expanded with one or more ``?_extra=`` parameters.
+These can be repeated or comma-separated:
+
+::
+
+    ?_extra=columns&_extra=count,next_url
+
+.. [[[cog
+    from json_api_doc import table_extras
+    table_extras(cog)
+.. ]]]
+
+Table JSON responses
+~~~~~~~~~~~~~~~~~~~~
+
+The available table extras are listed below.
+
+``count``
+    Total count of rows matching these filters (May execute additional queries.)
+
+    ``GET /fixtures/facetable.json?_extra=count``
+
+    .. code-block:: json
+
+        15
+
+``count_sql``
+    SQL query used to calculate the total count
+
+    ``GET /fixtures/facetable.json?_size=0&_extra=count_sql``
+
+    .. code-block:: json
+
+        "select count(*) from facetable "
+
+``facet_results``
+    Results of facets calculated against this data (May execute additional queries. See :ref:`facets` for details of how facets work.)
+
+    Shape abbreviated from /fixtures/facetable.json?_facet=state&_extra=facet_results.
+
+    .. code-block:: json
+
+        {
+          "results": {
+            "state": {
+              "name": "state",
+              "type": "column",
+              "results": [
+                {
+                  "value": "CA",
+                  "label": "CA",
+                  "count": 10
+                },
+                {
+                  "value": "MI",
+                  "label": "MI",
+                  "count": 4
+                }
+              ]
+            }
+          },
+          "timed_out": []
+        }
+
+``facets_timed_out``
+    Facet calculations that timed out
+
+    ``GET /fixtures/facetable.json?_facet=state&_extra=facets_timed_out``
+
+    A list of the names of any facets that exceeded the :ref:`setting_facet_time_limit_ms` time limit - an empty list if every facet calculation completed.
+
+    .. code-block:: json
+
+        []
+
+``suggested_facets``
+    Suggestions for facets that might return interesting results (May execute additional queries. Suggestions are controlled by the :ref:`setting_suggest_facets` setting.)
+
+    Shape abbreviated from /fixtures/facetable.json?_extra=suggested_facets.
+
+    .. code-block:: json
+
+        [
+          {
+            "name": "state",
+            "toggle_url": "http://localhost/fixtures/facetable.json?_extra=suggested_facets&_facet=state"
+          }
+        ]
+
+``human_description_en``
+    Human-readable description of the filters
+
+    ``GET /fixtures/facetable.json?state=CA&_sort=pk&_extra=human_description_en``
+
+    .. code-block:: json
+
+        "where state = \"CA\" sorted by pk"
+
+``next_url``
+    Full URL for the next page of results
+
+    ``GET /fixtures/facetable.json?_size=1&_extra=next_url``
+
+    ``null`` if there are no more pages of results. See :ref:`json_api_pagination`.
+
+    .. code-block:: json
+
+        "http://localhost/fixtures/facetable.json?_size=1&_extra=next_url&_next=1"
+
+``columns``
+    Column names returned by this query
+
+    ``GET /fixtures/facetable.json?_extra=columns``
+
+    .. code-block:: json
+
+        [
+          "pk",
+          "created",
+          "planet_int",
+          "on_earth",
+          "state",
+          "_city_id",
+          "_neighborhood",
+          "tags",
+          "complex_array",
+          "distinct_some_null",
+          "n"
+        ]
+
+``all_columns``
+    All columns in the table, regardless of _col/_nocol filtering
+
+    ``GET /fixtures/facetable.json?_col=pk&_extra=all_columns``
+
+    .. code-block:: json
+
+        [
+          "pk",
+          "created",
+          "planet_int",
+          "on_earth",
+          "state",
+          "_city_id",
+          "_neighborhood",
+          "tags",
+          "complex_array",
+          "distinct_some_null",
+          "n"
+        ]
+
+``primary_keys``
+    Primary keys for this table
+
+    ``GET /fixtures/facetable.json?_extra=primary_keys``
+
+    .. code-block:: json
+
+        [
+          "pk"
+        ]
+
+``display_columns``
+    Column metadata used by the HTML table display
+
+    Shape abbreviated from /fixtures/facetable.json?_size=1&_extra=display_columns.
+
+    .. code-block:: json
+
+        [
+          {
+            "name": "pk",
+            "sortable": true,
+            "is_pk": true,
+            "type": "INTEGER",
+            "notnull": 0
+          },
+          {
+            "name": "created",
+            "sortable": true,
+            "is_pk": false,
+            "type": "TEXT",
+            "notnull": 0,
+            "description": null,
+            "column_type": null,
+            "column_type_config": null
+          }
+        ]
+
+``render_cell``
+    Rendered HTML for each cell using the render_cell plugin hook (See the :ref:`render_cell() plugin hook <plugin_hook_render_cell>` documentation.)
+
+    The ``render_cell`` array has one item per row, in the same order as the ``rows`` array. Each object is keyed by column name. Only columns whose rendered value differs from the default are included.
+
+    .. code-block:: json
+
+        {
+          "rows": [
+            {
+              "id": 1,
+              "content": "hello"
+            },
+            {
+              "id": 4,
+              "content": "RENDER_CELL_DEMO"
+            }
+          ],
+          "render_cell": [
+            {},
+            {
+              "content": "<strong>Custom rendered HTML</strong>"
+            }
+          ]
+        }
+
+``debug``
+    Extra debug information (The contents of this block are not a stable part of the Datasette API and may change without warning.)
+
+    ``GET /fixtures/facetable.json?_extra=debug``
+
+    .. code-block:: json
+
+        {
+          "url_vars": {
+            "database": "fixtures",
+            "table": "facetable",
+            "format": "json"
+          },
+          "resolved": "ResolvedTable(db=<Database: fixtures (mutable, size=249856)>, table='facetable', is_view=False)",
+          "nofacet": null,
+          "nosuggest": null
+        }
+
+``request``
+    Full information about the request
+
+    ``GET /fixtures/facetable.json?_extra=request``
+
+    .. code-block:: json
+
+        {
+          "url": "http://localhost/fixtures/facetable.json?_extra=request",
+          "path": "/fixtures/facetable.json",
+          "full_path": "/fixtures/facetable.json?_extra=request",
+          "host": "localhost",
+          "args": {
+            "_extra": [
+              "request"
+            ]
+          }
+        }
+
+``query``
+    Details of the underlying SQL query
+
+    ``GET /fixtures/facetable.json?_size=1&_extra=query``
+
+    .. code-block:: json
+
+        {
+          "sql": "select pk, created, planet_int, on_earth, state, _city_id, _neighborhood, tags, complex_array, distinct_some_null, n from facetable order by pk limit 2",
+          "params": {}
+        }
+
+``column_types``
+    Column type assignments for this table (An empty object if no column types have been assigned. Column types can be assigned in :ref:`configuration <table_configuration_column_types>` or using the :ref:`set column type API <TableSetColumnTypeView>`.)
+
+    ``GET /fixtures/facetable.json?_size=0&_extra=column_types``
+
+    This example is from an instance where the ``tags`` column has been assigned the ``json`` column type.
+
+    .. code-block:: json
+
+        {
+          "tags": {
+            "type": "json",
+            "config": null
+          }
+        }
+
+``set_column_type_ui``
+    Information needed to build an interface for assigning column types (``null`` unless the current actor is allowed to use the :ref:`set column type API <TableSetColumnTypeView>` for this table.)
+
+    Shape abbreviated to two columns, as seen by an actor with ``set-column-type`` permission. ``current`` is the column type currently assigned to each column and ``options`` lists the types that could be assigned to it.
+
+    .. code-block:: json
+
+        {
+          "path": "/fixtures/facetable/-/set-column-type",
+          "columns": {
+            "created": {
+              "current": null,
+              "options": [
+                {
+                  "name": "email",
+                  "description": "Email address"
+                },
+                {
+                  "name": "json",
+                  "description": "JSON data"
+                },
+                {
+                  "name": "url",
+                  "description": "URL"
+                }
+              ]
+            },
+            "tags": {
+              "current": {
+                "type": "json",
+                "config": null
+              },
+              "options": [
+                {
+                  "name": "email",
+                  "description": "Email address"
+                },
+                {
+                  "name": "json",
+                  "description": "JSON data"
+                },
+                {
+                  "name": "url",
+                  "description": "URL"
+                }
+              ]
+            }
+          }
+        }
+
+``metadata``
+    Metadata about the table, database or stored query (See :ref:`metadata` for how to attach metadata to tables.)
+
+    ``GET /fixtures/facetable.json?_extra=metadata``
+
+    This example is from an instance where the ``facetable`` table has a metadata ``description`` and a :ref:`column description <metadata_column_descriptions>` for its ``state`` column. The ``columns`` object is empty for tables with no column descriptions.
+
+    .. code-block:: json
+
+        {
+          "description": "A demo table of places, used to demonstrate facets",
+          "columns": {
+            "state": "Two letter US state code"
+          }
+        }
+
+``extras``
+    List of ?_extra= blocks that can be used on this page
+
+    Shape abbreviated from /fixtures/facetable.json?_extra=extras - the full response lists every extra described on this page. ``toggle_url`` is the current URL with that extra added or removed, and ``selected`` is ``true`` for extras included in the current request.
+
+    .. code-block:: json
+
+        [
+          {
+            "name": "count",
+            "description": "Total count of rows matching these filters",
+            "toggle_url": "http://localhost/fixtures/facetable.json?_extra=extras&_extra=count",
+            "selected": false
+          },
+          {
+            "name": "extras",
+            "description": "List of ?_extra= blocks that can be used on this page",
+            "toggle_url": "http://localhost/fixtures/facetable.json",
+            "selected": true
+          }
+        ]
+
+``database``
+    Database name
+
+    ``GET /fixtures/facetable.json?_extra=database``
+
+    .. code-block:: json
+
+        "fixtures"
+
+``table``
+    Table name
+
+    ``GET /fixtures/facetable.json?_extra=table``
+
+    .. code-block:: json
+
+        "facetable"
+
+``database_color``
+    Color assigned to the database (A six character hex color, without the leading ``#``, derived from a hash of the database name and used in the Datasette interface.)
+
+    ``GET /fixtures/facetable.json?_extra=database_color``
+
+    .. code-block:: json
+
+        "9403e5"
+
+``renderers``
+    Alternative output renderers available for this table
+
+    ``GET /fixtures/facetable.json?_extra=renderers``
+
+    Each key is the name of an output format, each value the URL for this data in that format. Plugins can add additional formats using the :ref:`register_output_renderer() plugin hook <plugin_register_output_renderer>`.
+
+    .. code-block:: json
+
+        {
+          "json": "/fixtures/facetable.json?_extra=renderers&_format=json&_labels=on"
+        }
+
+``custom_table_templates``
+    Custom template names considered for this table (The first template in this list that exists will be used to render the table on the HTML version of this page. See :ref:`customization_custom_templates`.)
+
+    ``GET /fixtures/facetable.json?_extra=custom_table_templates``
+
+    .. code-block:: json
+
+        [
+          "_table-fixtures-facetable.html",
+          "_table-table-fixtures-facetable.html",
+          "_table.html"
+        ]
+
+``sorted_facet_results``
+    Facet results sorted for display (The same data as ``facet_results``, as a list in the order used by the HTML interface: facets from :ref:`facet configuration <facets_metadata>` first, then other facets ordered by their number of results.)
+
+    ``GET /fixtures/facetable.json?_facet=state&_extra=sorted_facet_results``
+
+    .. code-block:: json
+
+        [
+          {
+            "name": "state",
+            "type": "column",
+            "hideable": true,
+            "toggle_url": "/fixtures/facetable.json?_extra=sorted_facet_results",
+            "results": [
+              {
+                "value": "CA",
+                "label": "CA",
+                "count": 10,
+                "toggle_url": "http://localhost/fixtures/facetable.json?_facet=state&_extra=sorted_facet_results&state=CA",
+                "selected": false
+              },
+              {
+                "value": "MI",
+                "label": "MI",
+                "count": 4,
+                "toggle_url": "http://localhost/fixtures/facetable.json?_facet=state&_extra=sorted_facet_results&state=MI",
+                "selected": false
+              },
+              {
+                "value": "MC",
+                "label": "MC",
+                "count": 1,
+                "toggle_url": "http://localhost/fixtures/facetable.json?_facet=state&_extra=sorted_facet_results&state=MC",
+                "selected": false
+              }
+            ],
+            "truncated": false
+          }
+        ]
+
+``table_definition``
+    SQL definition for this table
+
+    ``GET /fixtures/facetable.json?_extra=table_definition``
+
+    .. code-block:: json
+
+        "CREATE TABLE facetable (\n    pk integer primary key,\n    created text,\n    planet_int integer,\n    on_earth integer,\n    state text,\n    _city_id integer,\n    _neighborhood text,\n    tags text,\n    complex_array text,\n    distinct_some_null,\n    n text,\n    FOREIGN KEY (\"_city_id\") REFERENCES [facet_cities](id)\n);"
+
+``view_definition``
+    SQL definition for this view
+
+    ``GET /fixtures/simple_view.json?_extra=view_definition``
+
+    .. code-block:: json
+
+        "CREATE VIEW simple_view AS\n    SELECT content, upper(content) AS upper_content FROM simple_primary_key;"
+
+``is_view``
+    Whether this resource is a view instead of a table
+
+    ``GET /fixtures/simple_view.json?_extra=is_view``
+
+    .. code-block:: json
+
+        true
+
+``private``
+    Whether this resource is private to the current actor (``true`` if the current actor can see this resource but an anonymous user could not. See :ref:`authentication_permissions`.)
+
+    ``GET /fixtures/facetable.json?_extra=private``
+
+    .. code-block:: json
+
+        false
+
+``expandable_columns``
+    Foreign key columns that can be expanded with labels (See :ref:`expand_foreign_keys` for how to expand these labels.)
+
+    ``GET /fixtures/facetable.json?_extra=expandable_columns``
+
+    Each item is a ``[foreign_key, label_column]`` pair: the foreign key relationship, then the column in the other table that would be used as the label for each expanded value.
+
+    .. code-block:: json
+
+        [
+          [
+            {
+              "column": "_city_id",
+              "other_table": "facet_cities",
+              "other_column": "id"
+            },
+            "name"
+          ]
+        ]
+
+``form_hidden_args``
+    Hidden form arguments used by the HTML table interface
+
+    ``GET /fixtures/facetable.json?_facet=state&_size=1&_extra=form_hidden_args``
+
+    .. code-block:: json
+
+        [
+          [
+            "_facet",
+            "state"
+          ],
+          [
+            "_size",
+            "1"
+          ],
+          [
+            "_extra",
+            "form_hidden_args"
+          ]
+        ]
+
+Row JSON responses
+~~~~~~~~~~~~~~~~~~
+
+The following extras are available for row JSON responses.
+
+``columns``
+    Column names returned by this query
+
+    ``GET /fixtures/simple_primary_key/1.json?_extra=columns``
+
+    .. code-block:: json
+
+        [
+          "id",
+          "content"
+        ]
+
+``primary_keys``
+    Primary keys for this table
+
+    ``GET /fixtures/simple_primary_key/1.json?_extra=primary_keys``
+
+    .. code-block:: json
+
+        [
+          "id"
+        ]
+
+``render_cell``
+    Rendered HTML for each cell using the render_cell plugin hook (See the :ref:`render_cell() plugin hook <plugin_hook_render_cell>` documentation.)
+
+    The ``render_cell`` array has one item for the requested row. The object is keyed by column name. Only columns whose rendered value differs from the default are included.
+
+    .. code-block:: json
+
+        {
+          "rows": [
+            {
+              "id": 4,
+              "content": "RENDER_CELL_DEMO"
+            }
+          ],
+          "render_cell": [
+            {
+              "content": "<strong>Custom rendered HTML</strong>"
+            }
+          ]
+        }
+
+``debug``
+    Extra debug information (The contents of this block are not a stable part of the Datasette API and may change without warning.)
+
+    ``GET /fixtures/simple_primary_key/1.json?_extra=debug``
+
+    .. code-block:: json
+
+        {
+          "url_vars": {
+            "database": "fixtures",
+            "table": "simple_primary_key",
+            "pks": "1",
+            "format": "json"
+          },
+          "resolved": {
+            "table": "simple_primary_key",
+            "sql": "select * from simple_primary_key where \"id\"=:p0",
+            "params": {
+              "p0": "1"
+            },
+            "pks": [
+              "id"
+            ],
+            "pk_values": [
+              "1"
+            ]
+          }
+        }
+
+``request``
+    Full information about the request
+
+    ``GET /fixtures/simple_primary_key/1.json?_extra=request``
+
+    .. code-block:: json
+
+        {
+          "url": "http://localhost/fixtures/simple_primary_key/1.json?_extra=request",
+          "path": "/fixtures/simple_primary_key/1.json",
+          "full_path": "/fixtures/simple_primary_key/1.json?_extra=request",
+          "host": "localhost",
+          "args": {
+            "_extra": [
+              "request"
+            ]
+          }
+        }
+
+``query``
+    Details of the underlying SQL query
+
+    ``GET /fixtures/simple_primary_key/1.json?_extra=query``
+
+    .. code-block:: json
+
+        {
+          "sql": "select * from simple_primary_key where \"id\"=:p0",
+          "params": {
+            "p0": "1"
+          }
+        }
+
+``column_types``
+    Column type assignments for this table (An empty object if no column types have been assigned. Column types can be assigned in :ref:`configuration <table_configuration_column_types>` or using the :ref:`set column type API <TableSetColumnTypeView>`.)
+
+    ``GET /fixtures/facetable/1.json?_extra=column_types``
+
+    This example is from an instance where the ``tags`` column has been assigned the ``json`` column type.
+
+    .. code-block:: json
+
+        {
+          "tags": {
+            "type": "json",
+            "config": null
+          }
+        }
+
+``metadata``
+    Metadata about the table, database or stored query (See :ref:`metadata` for how to attach metadata to tables.)
+
+    ``GET /fixtures/simple_primary_key/1.json?_extra=metadata``
+
+    This table has no metadata, so only an empty ``columns`` object is returned.
+
+    .. code-block:: json
+
+        {
+          "columns": {}
+        }
+
+``extras``
+    List of ?_extra= blocks that can be used on this page
+
+    Shape abbreviated from /fixtures/facetable.json?_extra=extras - the full response lists every extra described on this page. ``toggle_url`` is the current URL with that extra added or removed, and ``selected`` is ``true`` for extras included in the current request.
+
+    .. code-block:: json
+
+        [
+          {
+            "name": "count",
+            "description": "Total count of rows matching these filters",
+            "toggle_url": "http://localhost/fixtures/facetable.json?_extra=extras&_extra=count",
+            "selected": false
+          },
+          {
+            "name": "extras",
+            "description": "List of ?_extra= blocks that can be used on this page",
+            "toggle_url": "http://localhost/fixtures/facetable.json",
+            "selected": true
+          }
+        ]
+
+``database``
+    Database name
+
+    ``GET /fixtures/simple_primary_key/1.json?_extra=database``
+
+    .. code-block:: json
+
+        "fixtures"
+
+``table``
+    Table name
+
+    ``GET /fixtures/simple_primary_key/1.json?_extra=table``
+
+    .. code-block:: json
+
+        "simple_primary_key"
+
+``database_color``
+    Color assigned to the database (A six character hex color, without the leading ``#``, derived from a hash of the database name and used in the Datasette interface.)
+
+    ``GET /fixtures/simple_primary_key/1.json?_extra=database_color``
+
+    .. code-block:: json
+
+        "9403e5"
+
+``private``
+    Whether this resource is private to the current actor (``true`` if the current actor can see this resource but an anonymous user could not. See :ref:`authentication_permissions`.)
+
+    ``GET /fixtures/simple_primary_key/1.json?_extra=private``
+
+    .. code-block:: json
+
+        false
+
+``foreign_key_tables``
+    Tables that link to this row using foreign keys (May execute additional queries.)
+
+    ``GET /fixtures/simple_primary_key/1.json?_extra=foreign_key_tables``
+
+    ``count`` is the number of rows in the other table that reference this row, and ``link`` is a URL to browse those rows.
+
+    .. code-block:: json
+
+        [
+          {
+            "other_table": "complex_foreign_keys",
+            "column": "id",
+            "other_column": "f1",
+            "count": 1,
+            "link": "/fixtures/complex_foreign_keys?f1=1"
+          },
+          {
+            "other_table": "complex_foreign_keys",
+            "column": "id",
+            "other_column": "f2",
+            "count": 0,
+            "link": "/fixtures/complex_foreign_keys?f2=1"
+          },
+          {
+            "other_table": "complex_foreign_keys",
+            "column": "id",
+            "other_column": "f3",
+            "count": 1,
+            "link": "/fixtures/complex_foreign_keys?f3=1"
+          },
+          {
+            "other_table": "foreign_key_references",
+            "column": "id",
+            "other_column": "foreign_key_with_blank_label",
+            "count": 0,
+            "link": "/fixtures/foreign_key_references?foreign_key_with_blank_label=1"
+          },
+          {
+            "other_table": "foreign_key_references",
+            "column": "id",
+            "other_column": "foreign_key_with_label",
+            "count": 1,
+            "link": "/fixtures/foreign_key_references?foreign_key_with_label=1"
+          }
+        ]
+
+Query JSON responses
+~~~~~~~~~~~~~~~~~~~~
+
+The following extras are available for arbitrary SQL query responses and stored, named query responses.
+
+``columns``
+    Column names returned by this query
+
+    ``GET /fixtures/-/query.json?sql=select+1+as+one&_extra=columns``
+
+    .. code-block:: json
+
+        [
+          "one"
+        ]
+
+``render_cell``
+    Rendered HTML for each cell using the render_cell plugin hook (See the :ref:`render_cell() plugin hook <plugin_hook_render_cell>` documentation.)
+
+    The ``render_cell`` array has one item per query result row, in the same order as the ``rows`` array. Each object is keyed by column name. Only columns whose rendered value differs from the default are included.
+
+    .. code-block:: json
+
+        {
+          "rows": [
+            {
+              "content": "RENDER_CELL_DEMO"
+            }
+          ],
+          "render_cell": [
+            {
+              "content": "<strong>Custom rendered HTML</strong>"
+            }
+          ]
+        }
+
+``debug``
+    Extra debug information (The contents of this block are not a stable part of the Datasette API and may change without warning.)
+
+    ``GET /fixtures/-/query.json?sql=select+1+as+one&_extra=debug``
+
+    .. code-block:: json
+
+        {
+          "url_vars": {
+            "database": "fixtures",
+            "format": "json"
+          }
+        }
+
+``request``
+    Full information about the request
+
+    ``GET /fixtures/-/query.json?sql=select+1+as+one&_extra=request``
+
+    .. code-block:: json
+
+        {
+          "url": "http://localhost/fixtures/-/query.json?sql=select+1+as+one&_extra=request",
+          "path": "/fixtures/-/query.json",
+          "full_path": "/fixtures/-/query.json?sql=select+1+as+one&_extra=request",
+          "host": "localhost",
+          "args": {
+            "sql": [
+              "select 1 as one"
+            ],
+            "_extra": [
+              "request"
+            ]
+          }
+        }
+
+``query``
+    Details of the underlying SQL query
+
+    ``GET /fixtures/-/query.json?sql=select+1+as+one&_extra=query``
+
+    .. code-block:: json
+
+        {
+          "sql": "select 1 as one",
+          "params": {}
+        }
+
+    ``GET /fixtures/neighborhood_search.json?text=town&_extra=query``
+
+    .. code-block:: json
+
+        {
+          "sql": "\nselect _neighborhood, facet_cities.name, state\nfrom facetable\n    join facet_cities\n        on facetable._city_id = facet_cities.id\nwhere _neighborhood like '%' || :text || '%'\norder by _neighborhood;\n",
+          "params": {
+            "text": "town"
+          }
+        }
+
+``metadata``
+    Metadata about the table, database or stored query (See :ref:`metadata` for how to attach metadata to tables.)
+
+    ``GET /fixtures/neighborhood_search.json?text=town&_extra=metadata``
+
+    For stored queries this returns the full configuration of the query, including the :ref:`stored query options <queries_options>`. For ``?sql=`` queries it returns an empty object.
+
+    .. code-block:: json
+
+        {
+          "database": "fixtures",
+          "name": "neighborhood_search",
+          "sql": "\nselect _neighborhood, facet_cities.name, state\nfrom facetable\n    join facet_cities\n        on facetable._city_id = facet_cities.id\nwhere _neighborhood like '%' || :text || '%'\norder by _neighborhood;\n",
+          "title": "Search neighborhoods",
+          "description": null,
+          "description_html": null,
+          "hide_sql": false,
+          "fragment": null,
+          "params": [],
+          "parameters": [],
+          "is_write": false,
+          "is_private": false,
+          "is_trusted": true,
+          "owner_id": null,
+          "on_success_message": null,
+          "on_success_message_sql": null,
+          "on_success_redirect": null,
+          "on_error_message": null,
+          "on_error_redirect": null
+        }
+
+``extras``
+    List of ?_extra= blocks that can be used on this page
+
+    Shape abbreviated from /fixtures/facetable.json?_extra=extras - the full response lists every extra described on this page. ``toggle_url`` is the current URL with that extra added or removed, and ``selected`` is ``true`` for extras included in the current request.
+
+    .. code-block:: json
+
+        [
+          {
+            "name": "count",
+            "description": "Total count of rows matching these filters",
+            "toggle_url": "http://localhost/fixtures/facetable.json?_extra=extras&_extra=count",
+            "selected": false
+          },
+          {
+            "name": "extras",
+            "description": "List of ?_extra= blocks that can be used on this page",
+            "toggle_url": "http://localhost/fixtures/facetable.json",
+            "selected": true
+          }
+        ]
+
+``database``
+    Database name
+
+    ``GET /fixtures/-/query.json?sql=select+1+as+one&_extra=database``
+
+    .. code-block:: json
+
+        "fixtures"
+
+``database_color``
+    Color assigned to the database (A six character hex color, without the leading ``#``, derived from a hash of the database name and used in the Datasette interface.)
+
+    ``GET /fixtures/-/query.json?sql=select+1+as+one&_extra=database_color``
+
+    .. code-block:: json
+
+        "9403e5"
+
+``private``
+    Whether this resource is private to the current actor (``true`` if the current actor can see this resource but an anonymous user could not. See :ref:`authentication_permissions`.)
+
+    ``GET /fixtures/-/query.json?sql=select+1+as+one&_extra=private``
+
+    .. code-block:: json
+
+        false
+
+.. [[[end]]]
+
 .. _table_arguments:
 
 Table arguments
