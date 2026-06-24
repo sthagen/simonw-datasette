@@ -12,7 +12,6 @@ import dataclasses
 import datetime
 import functools
 import glob
-import hashlib
 import httpx
 import importlib.metadata
 import inspect
@@ -35,6 +34,7 @@ from jinja2 import (
     ChoiceLoader,
     Environment,
     FileSystemLoader,
+    pass_context,
     PrefixLoader,
 )
 from jinja2.environment import Template
@@ -122,6 +122,7 @@ from .utils import (
     parse_metadata,
     resolve_env_secrets,
     resolve_routes,
+    sha256_file,
     tilde_decode,
     tilde_encode,
     to_css_class,
@@ -313,7 +314,7 @@ async def favicon(request, send):
         send,
         str(FAVICON_PATH),
         content_type="image/png",
-        headers={"Cache-Control": "max-age=3600, immutable, public"},
+        headers={"Cache-Control": "max-age=3600, public"},
     )
 
 
@@ -328,6 +329,57 @@ def _to_string(value):
         return value
     else:
         return json.dumps(value, default=str)
+
+
+def _template_context_json_default(value):
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: getattr(value, field.name)
+            for field in dataclasses.fields(value)
+        }
+    return repr(value)
+
+
+@pass_context
+def _legacy_template_csrftoken(context):
+    request = context.get("request")
+    if request and "csrftoken" in request.scope:
+        return request.scope["csrftoken"]()
+    return ""
+
+
+def _resolve_static_asset_path(root_path, path):
+    root = Path(root_path).resolve()
+    full_path = (root / path).resolve()
+    try:
+        full_path.relative_to(root)
+    except ValueError:
+        raise ValueError("Static asset path cannot escape static root") from None
+    return full_path
+
+
+# Documentation for the variables Datasette.render_template() adds to the
+# context for every page. This is part of the documented template contract:
+# keys added in render_template() must be documented here - the contract
+# tests in tests/test_template_context.py enforce this, and the docs in
+# docs/template_context.rst are generated from it.
+TEMPLATE_BASE_CONTEXT = {
+    "request": "The current :ref:`Request object <internals_request>`, or None. Common properties include ``request.path``, ``request.args``, ``request.actor``, ``request.url_vars`` and ``request.host``.",
+    "crumb_items": 'Async function returning breadcrumb navigation items for the current page. Call it with ``request=request`` plus optional ``database=`` and ``table=`` arguments; it returns a list of ``{"href": url, "label": label}`` dictionaries.',
+    "urls": "Object with methods for constructing URLs within Datasette. Common methods include ``urls.instance()``, ``urls.database(database)``, ``urls.table(database, table)``, ``urls.query(database, query)``, ``urls.row(database, table, row_path)`` and ``urls.static(path)`` - see :ref:`internals_datasette_urls`.",
+    "actor": "The currently authenticated actor dictionary, or None. Actors usually include an ``id`` key and may include any other keys supplied by authentication plugins.",
+    "menu_links": "Async function returning links for the Datasette application menu, including links added by plugins. Each item is a link dictionary with ``href`` and ``label`` keys. See :ref:`plugin_hook_menu_links`; for page action menus that can also include JavaScript-backed buttons, see :ref:`plugin_actions`.",
+    "display_actor": "Function that accepts an actor dictionary and returns the display string used in the navigation menu.",
+    "show_logout": "True if the logout link should be shown in the navigation menu",
+    "zip": "Python's ``zip()`` builtin, made available to template logic",
+    "body_scripts": 'List of JavaScript snippets contributed by plugins using :ref:`plugin_hook_extra_body_script`. Each item is a dictionary with ``script`` containing JavaScript source and ``module`` indicating whether Datasette will wrap it in ``<script type="module">``; otherwise Datasette wraps it in a regular ``<script>`` block.',
+    "format_bytes": "Function that accepts a byte count integer and returns a human-readable string such as ``1.2 MB``.",
+    "show_messages": "Function returning any messages set for the current user, clearing them in the process. Returns a list of ``(message, type)`` pairs, where ``type`` is one of Datasette's ``INFO``, ``WARNING`` or ``ERROR`` constants.",
+    "extra_css_urls": "List of extra CSS stylesheets to include on the page. Each item is a dictionary with ``url`` and optional ``sri`` keys, from plugins and configuration.",
+    "extra_js_urls": "List of extra JavaScript URLs to include on the page. Each item is a dictionary with ``url`` plus optional ``sri`` and ``module`` keys, from plugins and configuration.",
+    "base_url": "The configured :ref:`setting_base_url` setting",
+    "datasette_version": "The version of Datasette that is running",
+}
 
 
 class Datasette:
@@ -422,6 +474,7 @@ class Datasette:
         self._internal_database.name = INTERNAL_DB_NAME
 
         self.cache_headers = cache_headers
+        self._static_asset_hashes = {}
         self.cors = cors
         config_files = []
         metadata_files = []
@@ -562,6 +615,8 @@ class Datasette:
         )
         environment.filters["escape_css_string"] = escape_css_string
         environment.filters["quote_plus"] = urllib.parse.quote_plus
+        environment.globals["csrftoken"] = _legacy_template_csrftoken
+        environment.globals["static"] = self.static
         self._jinja_env = environment
         environment.filters["escape_sqlite"] = escape_sqlite
         environment.filters["to_css_class"] = to_css_class
@@ -1435,24 +1490,55 @@ class Datasette:
 
         return db_plugin_config
 
-    def static_hash(self, filename):
-        if not hasattr(self, "_static_hashes"):
-            self._static_hashes = {}
-        path = os.path.join(str(app_root), "datasette/static", filename)
-        signature = (os.path.getmtime(path), os.path.getsize(path))
-        cached = self._static_hashes.get(filename)
-        if cached and cached["signature"] == signature:
-            return cached["hash"]
-        with open(path) as fp:
-            static_hash = hashlib.sha1(fp.read().encode("utf8")).hexdigest()[:6]
-        self._static_hashes[filename] = {
-            "signature": signature,
-            "hash": static_hash,
-        }
-        return static_hash
+    def _static_asset_path(self, path):
+        return _resolve_static_asset_path(app_root / "datasette" / "static", path)
 
-    def app_css_hash(self):
-        return self.static_hash("app.css")
+    def _static_plugin_asset_path(self, plugin_name, path):
+        for plugin in get_plugins():
+            if not plugin["static_path"]:
+                continue
+            possible_names = {plugin["name"], plugin["name"].replace("-", "_")}
+            if plugin_name in possible_names:
+                return _resolve_static_asset_path(plugin["static_path"], path)
+        raise FileNotFoundError(
+            "No static assets found for plugin {}".format(plugin_name)
+        )
+
+    def _static_mounted_asset(self, mount_name, path):
+        mount_name = mount_name.strip("/")
+        for mount, dirname in self.static_mounts:
+            if mount.strip("/") == mount_name:
+                return (
+                    _resolve_static_asset_path(dirname, path),
+                    self.urls.path("/{}/{}".format(mount_name, path.lstrip("/"))),
+                )
+        raise FileNotFoundError("No static mount found for {}".format(mount_name))
+
+    def _static_asset_hash(self, filepath):
+        filepath = Path(filepath)
+        if self.cache_headers:
+            cached = self._static_asset_hashes.get(filepath)
+            if cached:
+                return cached
+        digest = sha256_file(filepath)[:12]
+        if self.cache_headers:
+            self._static_asset_hashes[filepath] = digest
+        return digest
+
+    def static(self, path, plugin=None, mount=None):
+        if plugin and mount:
+            raise ValueError("Use either plugin= or mount=, not both")
+        if plugin:
+            filepath = self._static_plugin_asset_path(plugin, path)
+            url = self.urls.static_plugins(plugin, path)
+        elif mount:
+            filepath, url = self._static_mounted_asset(mount, path)
+        else:
+            filepath = self._static_asset_path(path)
+            url = self.urls.static(path)
+        hash_value = self._static_asset_hash(filepath)
+        separator = "&" if "?" in url else "?"
+        return url + separator + urllib.parse.urlencode({"_hash": hash_value})
 
     def _prepare_connection(self, conn, database):
         conn.row_factory = sqlite3.Row
@@ -2265,7 +2351,11 @@ class Datasette:
                 templates = [templates]
             template = self.get_jinja_environment(request).select_template(templates)
         if dataclasses.is_dataclass(context):
-            context = dataclasses.asdict(context)
+            # Shallow conversion - asdict() would deep-copy values, which
+            # is wasteful and fails on values like sqlite3.Row
+            context = {
+                f.name: getattr(context, f.name) for f in dataclasses.fields(context)
+            }
         body_scripts = []
         # pylint: disable=no-member
         for extra_script in pm.hook.extra_body_script(
@@ -2315,6 +2405,8 @@ class Datasette:
                     links.extend(extra_links)
             return links
 
+        # Keys added here must be documented in TEMPLATE_BASE_CONTEXT -
+        # the contract tests fail otherwise
         template_context = {
             **context,
             **{
@@ -2327,9 +2419,6 @@ class Datasette:
                 "show_logout": request is not None
                 and "ds_actor" in request.cookies
                 and request.actor,
-                "app_css_hash": self.app_css_hash(),
-                "edit_tools_js_hash": self.static_hash("edit-tools.js"),
-                "table_js_hash": self.static_hash("table.js"),
                 "zip": zip,
                 "body_scripts": body_scripts,
                 "format_bytes": format_bytes,
@@ -2341,18 +2430,19 @@ class Datasette:
                     "extra_js_urls", template, context, request, view_name
                 ),
                 "base_url": self.setting("base_url"),
-                "csrftoken": (
-                    request.scope["csrftoken"]
-                    if request and "csrftoken" in request.scope
-                    else lambda: ""
-                ),
                 "datasette_version": __version__,
             },
             **extra_template_vars,
         }
         if request and request.args.get("_context") and self.setting("template_debug"):
             return "<pre>{}</pre>".format(
-                escape(json.dumps(template_context, default=repr, indent=4))
+                escape(
+                    json.dumps(
+                        template_context,
+                        default=_template_context_json_default,
+                        indent=4,
+                    )
+                )
             )
 
         return await template.render_async(template_context)
@@ -2427,7 +2517,6 @@ class Datasette:
         add_route(IndexView.as_view(self), r"/(\.(?P<format>jsono?))?$")
         add_route(IndexView.as_view(self), r"/-/(\.(?P<format>jsono?))?$")
         add_route(permanent_redirect("/-/"), r"/-$")
-        # TODO: /favicon.ico and /-/static/ deserve far-future cache expires
         add_route(favicon, "/favicon.ico")
 
         add_route(

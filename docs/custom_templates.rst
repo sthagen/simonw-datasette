@@ -94,11 +94,55 @@ The ``core`` class is particularly useful - you can apply this directly to a ``<
 
 .. _customization_static_files:
 
-Serving static files
-~~~~~~~~~~~~~~~~~~~~
+Linking to static assets
+~~~~~~~~~~~~~~~~~~~~~~~~
 
-Datasette can serve static files for you, using the ``--static`` option.
-Consider the following directory structure::
+Use the ``static()`` template function to create cache-busting URLs to static
+assets from your custom templates. It returns a URL with a ``?_hash=`` parameter
+based on the file contents and takes the ``base_url`` setting into account.
+
+When the hash in the URL matches the current file contents, Datasette will serve
+the static asset with a far-future immutable ``Cache-Control`` header.
+
+When Datasette is run using ``--reload``, the file contents are hashed every time
+the template is rendered, so edits to static files will update their URLs
+without restarting Datasette. Without ``--reload``, the hash is cached for the
+lifetime of the Datasette process.
+
+For Datasette's bundled static assets, pass the path to the asset:
+
+.. code-block:: html+jinja
+
+    <link rel="stylesheet" href="{{ static('app.css') }}">
+
+For plugin static assets, pass the plugin name using ``plugin=`` and a path
+relative to the plugin's ``static/`` directory:
+
+.. code-block:: html+jinja
+
+    <script src="{{ static('plugin.js', plugin='datasette_plugin_name') }}" defer></script>
+
+For files served from a directory mounted using ``--static assets:static-files/``,
+pass the mount point name using ``mount=`` and a path relative to that mounted
+directory:
+
+.. code-block:: html+jinja
+
+    <link rel="stylesheet" href="{{ static('styles.css', mount='assets') }}">
+    <script src="{{ static('app.js', mount='assets') }}" defer></script>
+
+You can also use ``urls.path()`` if you want to link to a mounted file without
+adding a content hash:
+
+.. code-block:: html+jinja
+
+    <link rel="stylesheet" href="{{ urls.path('/assets/styles.css') }}">
+
+Serving files from a directory
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Datasette can serve static files from a directory for you, using the ``--static``
+option. Consider the following directory structure::
 
     metadata.json
     static-files/styles.css
@@ -176,6 +220,11 @@ this::
 
 Datasette will now first look for templates in that directory, and fall back on
 the defaults if no matches are found.
+
+The variables made available to each template are documented on the
+:ref:`template_context` page. Variables documented there are a stable API:
+custom templates that use them will keep working in future Datasette
+releases, up until the next major version.
 
 It is also possible to over-ride templates on a per-database, per-row or per-
 table basis.
