@@ -52,6 +52,9 @@ The request object is passed to various plugin hooks. It represents an incoming 
 ``.actor`` - dictionary (str -> Any) or None
     The currently authenticated actor (see :ref:`actors <authentication_actor>`), or ``None`` if the request is unauthenticated.
 
+``.max_post_body_bytes`` - integer
+    The maximum number of bytes ``await request.post_body()`` will read into memory, or ``0`` for no limit. Set from the :ref:`setting_max_post_body_bytes` setting (default 2MB) for requests created by Datasette. Can be passed to the ``Request`` constructor as a keyword argument.
+
 The object also has the following awaitable methods:
 
 ``await request.form(files=False, ...)`` - FormData
@@ -109,8 +112,10 @@ The object also has the following awaitable methods:
 ``await request.json()`` - Any
     Returns the parsed JSON body of a request submitted by ``POST``.
 
-``await request.post_body()`` - bytes
+``await request.post_body(max_bytes=None)`` - bytes
     Returns the un-parsed body of a request submitted by ``POST`` - useful for things like incoming JSON data.
+
+    The body is read fully into memory, capped at ``request.max_post_body_bytes`` - which Datasette sets from the :ref:`setting_max_post_body_bytes` setting (default 2MB). Bodies that exceed the limit raise a ``datasette.PayloadTooLarge`` exception, which Datasette turns into an HTTP 413 error response. Pass ``max_bytes=`` to override the limit for a specific call, or ``max_bytes=0`` to disable it. ``request.post_vars()`` and ``request.json()`` read the body through this method, so the same limit applies to them.
 
 And a class method that can be used to create fake request objects for use in tests:
 
@@ -279,7 +284,7 @@ For example:
         content_type="application/xml; charset=utf-8",
     )
 
-The quickest way to create responses is using the ``Response.text(...)``, ``Response.html(...)``, ``Response.json(...)`` or ``Response.redirect(...)`` helper methods:
+The quickest way to create responses is using the ``Response.text(...)``, ``Response.html(...)``, ``Response.json(...)``, ``Response.error(...)`` or ``Response.redirect(...)`` helper methods:
 
 .. code-block:: python
 
@@ -290,6 +295,8 @@ The quickest way to create responses is using the ``Response.text(...)``, ``Resp
     text_response = Response.text(
         "This will become utf-8 encoded text"
     )
+    # A JSON error in Datasette's standard error format:
+    error_response = Response.error("Cannot do that", 400)
     # Redirects are served as 302, unless you pass status=301:
     redirect_response = Response.redirect(
         "https://latest.datasette.io/"
@@ -298,6 +305,8 @@ The quickest way to create responses is using the ``Response.text(...)``, ``Resp
 Each of these responses will use the correct corresponding content-type - ``text/html; charset=utf-8``, ``application/json; charset=utf-8`` or ``text/plain; charset=utf-8`` respectively.
 
 Each of the helper methods take optional ``status=`` and ``headers=`` arguments, documented above.
+
+``Response.error(messages, status=400)`` returns a JSON error in the :ref:`standard Datasette error format <json_api_errors>`. ``messages`` can be a single string or a list of strings. Use this for JSON-only endpoints; if your error should content-negotiate between JSON and HTML, raise ``Forbidden``, ``NotFound``, ``BadRequest`` or ``DatasetteError`` instead and Datasette's error handling will build the appropriate response.
 
 .. _internals_response_asgi_send:
 
@@ -2354,6 +2363,14 @@ The internal database schema is as follows:
 
 .. code-block:: sql
 
+    CREATE TABLE "_sqlite_migrations" (
+       "id" INTEGER PRIMARY KEY,
+       "migration_set" TEXT,
+       "name" TEXT,
+       "applied_at" TEXT
+    );
+    CREATE UNIQUE INDEX "idx__sqlite_migrations_migration_set_name"
+        ON "_sqlite_migrations" ("migration_set", "name");
     CREATE TABLE catalog_databases (
         database_name TEXT PRIMARY KEY,
         path TEXT,

@@ -22,9 +22,11 @@ from datasette.utils import (
     add_cors_headers,
     await_me_maybe,
     call_with_supported_arguments,
+    CustomJSONEncoder,
     CustomRow,
     append_querystring,
     compound_keys_after_sql,
+    decode_write_json_rows,
     format_bytes,
     make_slot_function,
     tilde_encode,
@@ -41,16 +43,24 @@ from datasette.utils import (
     urlsafe_components,
     value_as_boolean,
     InvalidSql,
+    WriteJsonValueError,
     sqlite3,
 )
-from datasette.utils.asgi import BadRequest, Forbidden, NotFound, Request, Response
+from datasette.utils.asgi import (
+    BadRequest,
+    Forbidden,
+    NotFound,
+    PayloadTooLarge,
+    Request,
+    Response,
+)
 from datasette.filters import Filters
 import sqlite_utils
 from dataclasses import dataclass, field
 
 from datasette.extras import ExtraScope
 from . import Context, from_extra
-from .base import BaseView, DatasetteError, _error, stream_csv
+from .base import BaseView, DatasetteError, stream_csv
 from .database import QueryView
 from .table_create_alter import (
     ALTER_TABLE_COLUMN_TYPES,
@@ -62,6 +72,7 @@ from .table_create_alter import (
 from .table_extras import (
     TABLE_EXTRA_BUNDLES,
     TableExtraContext,
+    count_is_truncated,
     precompute_database_action_permissions,
     precompute_table_action_permissions,
     resolve_table_extras,
@@ -96,7 +107,6 @@ class TableContext(Context):
     human_description_en: str = from_extra()
     is_view: bool = from_extra()
     metadata: dict = from_extra()
-    next_url: str = from_extra()
     primary_keys: list = from_extra()
     private: bool = from_extra()
     query: dict = from_extra()
@@ -113,6 +123,11 @@ class TableContext(Context):
         metadata={"help": "True if the data for this page was retrieved without errors"}
     )
     next: str = field(metadata={"help": "Pagination token for the next page, or None"})
+    next_url: str = field(
+        metadata={
+            "help": "Full URL for the next page of results, or None if there are no more pages. See :ref:`json_api_pagination`."
+        }
+    )
     count_truncated: bool = field(
         metadata={
             "help": "True if ``count`` is a capped lower bound rather than an exact total, because Datasette stopped counting after its configured row-count limit."
@@ -205,7 +220,7 @@ class TableContext(Context):
     )
     table_insert_ui: dict = field(
         metadata={
-            "help": "Information needed to enable the row insertion UI, or ``None`` if row insertion is not available to the current actor. When present it has ``path``, ``tableName``, ``columns`` and ``primaryKeys`` keys; each column includes ``name``, ``sqlite_type``, ``notnull``, ``default``, ``has_default``, ``is_pk``, ``value_kind`` and ``column_type`` keys."
+            "help": "Information needed to enable the row insertion UI, or ``None`` if row insertion is not available to the current actor. When present it has ``path``, ``tableName``, ``columns``, ``bulkColumns``, ``primaryKeys`` and ``maxInsertRows`` keys, plus optional ``upsertPath`` if the current actor has permission to update rows. ``columns`` lists columns for the single-row insert form, while ``bulkColumns`` lists columns for the bulk insert form. Each column includes ``name``, ``sqlite_type``, ``notnull``, ``default``, ``has_default``, ``is_pk``, ``is_auto_pk``, ``value_kind`` and ``column_type`` keys."
         }
     )
     table_alter_ui: dict = field(
@@ -480,8 +495,15 @@ async def _table_insert_ui(
     ):
         return None
 
+    can_update = await datasette.allowed(
+        action="update-row",
+        resource=TableResource(database=database_name, table=table_name),
+        actor=request.actor,
+    )
+
     column_types_map = await datasette.get_column_types(database_name, table_name)
     columns = []
+    bulk_columns = []
     column_details = await db.table_column_details(table_name)
     for column in column_details:
         if column.hidden:
@@ -492,32 +514,40 @@ async def _table_insert_ui(
             and len(pks) == 1
             and SQLiteType.from_declared_type(column.type) == SQLiteType.INTEGER
         )
+        column_type = column_types_map.get(column.name)
+        column_data = {
+            "name": column.name,
+            "sqlite_type": _column_sqlite_type_for_insert_form(column),
+            "notnull": column.notnull,
+            "default": column.default_value,
+            "has_default": column.default_value is not None,
+            "is_pk": is_pk,
+            "is_auto_pk": is_auto_pk,
+            "value_kind": _column_value_kind_for_insert_form(column),
+            "column_type": (
+                {"type": column_type.name, "config": column_type.config}
+                if column_type is not None
+                else None
+            ),
+        }
+        bulk_columns.append(column_data)
         if is_auto_pk:
             continue
-        column_type = column_types_map.get(column.name)
-        columns.append(
-            {
-                "name": column.name,
-                "sqlite_type": _column_sqlite_type_for_insert_form(column),
-                "notnull": column.notnull,
-                "default": column.default_value,
-                "has_default": column.default_value is not None,
-                "is_pk": is_pk,
-                "value_kind": _column_value_kind_for_insert_form(column),
-                "column_type": (
-                    {"type": column_type.name, "config": column_type.config}
-                    if column_type is not None
-                    else None
-                ),
-            }
-        )
+        columns.append(column_data)
 
-    return {
+    data = {
         "path": "{}/-/insert".format(datasette.urls.table(database_name, table_name)),
         "tableName": table_name,
         "columns": columns,
+        "bulkColumns": bulk_columns,
         "primaryKeys": pks,
+        "maxInsertRows": datasette.setting("max_insert_rows"),
     }
+    if can_update:
+        data["upsertPath"] = "{}/-/upsert".format(
+            datasette.urls.table(database_name, table_name)
+        )
+    return data
 
 
 async def _table_alter_ui(
@@ -925,9 +955,7 @@ class TableInsertView(BaseView):
         def _errors(errors):
             return None, errors, {}
 
-        if not request.headers.get("content-type").startswith("application/json"):
-            # TODO: handle form-encoded data
-            return _errors(["Invalid content-type, must be application/json"])
+        # The body is parsed as JSON regardless of the Content-Type header
         try:
             data = await request.json()
         except json.JSONDecodeError as e:
@@ -1011,7 +1039,7 @@ class TableInsertView(BaseView):
         try:
             resolved = await self.ds.resolve_table(request)
         except NotFound as e:
-            return _error([e.args[0]], 404)
+            return Response.error([e.args[0]], 404)
         db = resolved.db
         database_name = db.name
         table_name = resolved.table
@@ -1019,7 +1047,7 @@ class TableInsertView(BaseView):
         # Table must exist (may handle table creation in the future)
         db = self.ds.get_database(database_name)
         if not await db.table_exists(table_name):
-            return _error(["Table not found: {}".format(table_name)], 404)
+            return Response.error(["Table not found: {}".format(table_name)], 404)
 
         if upsert:
             # Must have insert-row AND upsert-row permissions
@@ -1035,7 +1063,7 @@ class TableInsertView(BaseView):
                     actor=request.actor,
                 )
             ):
-                return _error(
+                return Response.error(
                     ["Permission denied: need both insert-row and update-row"], 403
                 )
         else:
@@ -1045,25 +1073,32 @@ class TableInsertView(BaseView):
                 resource=TableResource(database=database_name, table=table_name),
                 actor=request.actor,
             ):
-                return _error(["Permission denied"], 403)
+                return Response.error(["Permission denied"], 403)
 
         if not db.is_mutable:
-            return _error(["Database is immutable"], 403)
+            return Response.error(["Database is immutable"], 403)
 
         pks = await db.primary_keys(table_name)
 
-        rows, errors, extras = await self._validate_data(
-            request, db, table_name, pks, upsert
-        )
+        try:
+            rows, errors, extras = await self._validate_data(
+                request, db, table_name, pks, upsert
+            )
+        except PayloadTooLarge as e:
+            return Response.error([str(e)], 413)
         if errors:
-            return _error(errors, 400)
+            return Response.error(errors, 400)
+        try:
+            rows = decode_write_json_rows(rows)
+        except WriteJsonValueError as e:
+            return Response.error([str(e)], 400)
 
         # Validate column types
         ct_errors = await _validate_column_types(
             self.ds, database_name, table_name, rows
         )
         if ct_errors:
-            return _error(ct_errors, 400)
+            return Response.error(ct_errors, 400)
 
         num_rows = len(rows)
 
@@ -1077,14 +1112,16 @@ class TableInsertView(BaseView):
         alter = extras.get("alter")
 
         if upsert and (ignore or replace):
-            return _error(["Upsert does not support ignore or replace"], 400)
+            return Response.error(["Upsert does not support ignore or replace"], 400)
 
         if replace and not await self.ds.allowed(
             action="update-row",
             resource=TableResource(database=database_name, table=table_name),
             actor=request.actor,
         ):
-            return _error(['Permission denied: need update-row to use "replace"'], 403)
+            return Response.error(
+                ['Permission denied: need update-row to use "replace"'], 403
+            )
 
         initial_schema = None
         if alter:
@@ -1094,7 +1131,7 @@ class TableInsertView(BaseView):
                 resource=TableResource(database=database_name, table=table_name),
                 actor=request.actor,
             ):
-                return _error(["Permission denied for alter-table"], 403)
+                return Response.error(["Permission denied for alter-table"], 403)
             # Track initial schema to check if it changed later
             initial_schema = await db.execute_fn(
                 lambda conn: sqlite_utils.Database(conn)[table_name].schema
@@ -1134,7 +1171,7 @@ class TableInsertView(BaseView):
         try:
             rows = await db.execute_write_fn(insert_or_upsert_rows, request=request)
         except Exception as e:
-            return _error([str(e)])
+            return Response.error([str(e)])
         result = {"ok": True}
         if should_return:
             if upsert:
@@ -1191,7 +1228,11 @@ class TableInsertView(BaseView):
                     )
                 )
 
-        return Response.json(result, status=200 if upsert else 201)
+        return Response.json(
+            result,
+            status=200 if upsert else 201,
+            default=CustomJSONEncoder().default,
+        )
 
 
 class TableUpsertView(TableInsertView):
@@ -1211,7 +1252,7 @@ class TableSetColumnTypeView(BaseView):
         try:
             resolved = await self.ds.resolve_table(request)
         except NotFound as e:
-            return _error([e.args[0]], 404)
+            return Response.error([e.args[0]], 404)
 
         database_name = resolved.db.name
         table_name = resolved.table
@@ -1221,41 +1262,39 @@ class TableSetColumnTypeView(BaseView):
             resource=TableResource(database=database_name, table=table_name),
             actor=request.actor,
         ):
-            return _error(["Permission denied"], 403)
-
-        content_type = request.headers.get("content-type") or ""
-        if not content_type.startswith("application/json"):
-            return _error(["Invalid content-type, must be application/json"], 400)
+            return Response.error(["Permission denied"], 403)
 
         try:
             data = await request.json()
         except json.JSONDecodeError as e:
-            return _error(["Invalid JSON: {}".format(e)], 400)
+            return Response.error(["Invalid JSON: {}".format(e)], 400)
+        except PayloadTooLarge as e:
+            return Response.error([str(e)], 413)
 
         if not isinstance(data, dict):
-            return _error(["JSON must be a dictionary"], 400)
+            return Response.error(["JSON must be a dictionary"], 400)
 
         invalid_keys = set(data.keys()) - {"column", "column_type"}
         if invalid_keys:
-            return _error(
+            return Response.error(
                 ['Invalid parameter: "{}"'.format('", "'.join(sorted(invalid_keys)))],
                 400,
             )
 
         if "column" not in data:
-            return _error(['"column" is required'], 400)
+            return Response.error(['"column" is required'], 400)
         column = data["column"]
         if not isinstance(column, str):
-            return _error(['"column" must be a string'], 400)
+            return Response.error(['"column" must be a string'], 400)
 
         if "column_type" not in data:
-            return _error(['"column_type" is required'], 400)
+            return Response.error(['"column_type" is required'], 400)
 
         column_details = await self.ds._get_resource_column_details(
             database_name, table_name
         )
         if column not in column_details:
-            return _error(["Column not found: {}".format(column)], 400)
+            return Response.error(["Column not found: {}".format(column)], 400)
 
         column_type_data = data["column_type"]
         if column_type_data is None:
@@ -1272,11 +1311,11 @@ class TableSetColumnTypeView(BaseView):
             )
 
         if not isinstance(column_type_data, dict):
-            return _error(['"column_type" must be an object or null'], 400)
+            return Response.error(['"column_type" must be an object or null'], 400)
 
         invalid_column_type_keys = set(column_type_data.keys()) - {"type", "config"}
         if invalid_column_type_keys:
-            return _error(
+            return Response.error(
                 [
                     'Invalid column_type parameter: "{}"'.format(
                         '", "'.join(sorted(invalid_column_type_keys))
@@ -1286,24 +1325,24 @@ class TableSetColumnTypeView(BaseView):
             )
 
         if "type" not in column_type_data:
-            return _error(['"column_type.type" is required'], 400)
+            return Response.error(['"column_type.type" is required'], 400)
         column_type = column_type_data["type"]
         if not isinstance(column_type, str):
-            return _error(['"column_type.type" must be a string'], 400)
+            return Response.error(['"column_type.type" must be a string'], 400)
 
         config = column_type_data.get("config")
         if config is not None and not isinstance(config, dict):
-            return _error(['"column_type.config" must be a dictionary'], 400)
+            return Response.error(['"column_type.config" must be a dictionary'], 400)
 
         if column_type not in self.ds._column_types:
-            return _error(["Unknown column type: {}".format(column_type)], 400)
+            return Response.error(["Unknown column type: {}".format(column_type)], 400)
 
         try:
             await self.ds.set_column_type(
                 database_name, table_name, column, column_type, config
             )
         except ValueError as e:
-            return _error([str(e)], 400)
+            return Response.error([str(e)], 400)
 
         return Response.json(
             {
@@ -1327,28 +1366,30 @@ class TableDropView(BaseView):
         try:
             resolved = await self.ds.resolve_table(request)
         except NotFound as e:
-            return _error([e.args[0]], 404)
+            return Response.error([e.args[0]], 404)
         db = resolved.db
         database_name = db.name
         table_name = resolved.table
         # Table must exist
         db = self.ds.get_database(database_name)
         if not await db.table_exists(table_name):
-            return _error(["Table not found: {}".format(table_name)], 404)
+            return Response.error(["Table not found: {}".format(table_name)], 404)
         if not await self.ds.allowed(
             action="drop-table",
             resource=TableResource(database=database_name, table=table_name),
             actor=request.actor,
         ):
-            return _error(["Permission denied"], 403)
+            return Response.error(["Permission denied"], 403)
         if not db.is_mutable:
-            return _error(["Database is immutable"], 403)
+            return Response.error(["Database is immutable"], 403)
         confirm = False
         try:
             data = await request.json()
             confirm = data.get("confirm")
         except json.JSONDecodeError:
             pass
+        except PayloadTooLarge as e:
+            return Response.error([str(e)], 413)
 
         if not confirm:
             return Response.json(
@@ -1525,7 +1566,7 @@ class TableAutocompleteView(BaseView):
             and value_as_boolean(initial_arg)
         )
         if not q and not initial:
-            return Response.json({"rows": []})
+            return Response.json({"ok": True, "rows": []})
         params = {
             "q": q,
             "like": "%{}%".format(_escape_like(q)),
@@ -1588,10 +1629,13 @@ class TableAutocompleteView(BaseView):
                     custom_time_limit=AUTOCOMPLETE_TIME_LIMIT_MS,
                 )
             except QueryInterrupted:
-                return Response.json({"rows": []})
+                return Response.json({"ok": True, "rows": []})
 
         return Response.json(
-            {"rows": _autocomplete_response_rows(results.rows, pks, label_column)}
+            {
+                "ok": True,
+                "rows": _autocomplete_response_rows(results.rows, pks, label_column),
+            }
         )
 
 
@@ -2250,10 +2294,16 @@ async def table_view_data(
 
     # Resolve extras
     extras = extra_names_from_request(request)
+    if not extra_extras:
+        # Data formats reject unknown extras; the HTML path (which passes
+        # extra_extras={"_html"}) resolves internal extras of its own
+        table_extra_registry.validate_requested(extras, ExtraScope.TABLE)
     if any(k for k in request.args.keys() if k == "_facet" or k.startswith("_facet_")):
         extras.add("facet_results")
     if request.args.get("_shape") == "object":
         extras.add("primary_keys")
+    if "count" in extras:
+        extras.add("count_truncated")
     if extra_extras:
         extras.update(extra_extras)
 
@@ -2308,6 +2358,7 @@ async def table_view_data(
     data = {
         "ok": True,
         "next": next_value and str(next_value) or None,
+        "next_url": next_url,
     }
     data.update(
         await resolve_table_extras(
@@ -2332,7 +2383,7 @@ async def table_view_data(
     data["rows"] = transformed_rows
 
     if context_for_html_hack:
-        data["count_truncated"] = _count_truncated_for_table_page(
+        data["count_truncated"] = count_is_truncated(
             datasette, db, database_name, table_name, count_sql, data.get("count")
         )
         data.update(extra_context_from_filters)
@@ -2398,24 +2449,6 @@ async def table_view_data(
         )
 
     return data, rows[:page_size], columns, expanded_columns, sql, next_url
-
-
-def _count_truncated_for_table_page(
-    datasette, db, database_name, table_name, count_sql, count
-):
-    if count != db.count_limit + 1:
-        return False
-    if (
-        not db.is_mutable
-        and datasette.inspect_data
-        and count_sql == f"select count(*) from {table_name} "
-    ):
-        try:
-            datasette.inspect_data[database_name]["tables"][table_name]["count"]
-            return False
-        except KeyError:
-            pass
-    return True
 
 
 async def _next_value_and_url(

@@ -1,6 +1,7 @@
 import itertools
 from dataclasses import dataclass
 
+from datasette.column_types import SQLiteType
 from datasette.database import QueryInterrupted
 from datasette.extras import Extra, ExtraExample, ExtraRegistry, ExtraScope, Provider
 from datasette.plugins import pm
@@ -138,6 +139,39 @@ class CountExtra(Extra):
             except QueryInterrupted:
                 pass
         return count
+
+
+def count_is_truncated(datasette, db, database_name, table_name, count_sql, count):
+    if count != db.count_limit + 1:
+        return False
+    if (
+        not db.is_mutable
+        and datasette.inspect_data
+        and count_sql == f"select count(*) from {table_name} "
+    ):
+        try:
+            datasette.inspect_data[database_name]["tables"][table_name]["count"]
+            return False
+        except KeyError:
+            pass
+    return True
+
+
+class CountTruncatedExtra(Extra):
+    description = "True if the count hit Datasette's counting limit, meaning the real number of matching rows is at least the reported count."
+    example = ExtraExample("/fixtures/facetable.json?_extra=count,count_truncated")
+    scopes = {ExtraScope.TABLE}
+    expensive = True
+
+    async def resolve(self, context, count):
+        return count_is_truncated(
+            context.datasette,
+            context.db,
+            context.database_name,
+            context.table_name,
+            context.count_sql,
+            count,
+        )
 
 
 class FacetInstancesProvider(Provider):
@@ -287,21 +321,6 @@ class HumanDescriptionEnExtra(Extra):
         return human_description_en
 
 
-class NextUrlExtra(Extra):
-    description = "Full URL for the next page of results"
-    example = ExtraExample(
-        "/fixtures/facetable.json?_size=1&_extra=next_url",
-        note=(
-            "``null`` if there are no more pages of results. "
-            "See :ref:`json_api_pagination`."
-        ),
-    )
-    scopes = {ExtraScope.TABLE}
-
-    async def resolve(self, context):
-        return context.next_url
-
-
 class ColumnsExtra(Extra):
     description = "List of column names returned by this table, row or query."
     example = ExtraExample("/fixtures/facetable.json?_extra=columns")
@@ -340,6 +359,55 @@ class PrimaryKeysExtra(Extra):
 
     async def resolve(self, context):
         return context.pks
+
+
+def column_detail_as_json(column):
+    return {
+        "type": column.type,
+        "sqlite_type": SQLiteType.from_declared_type(column.type).value,
+        "notnull": bool(column.notnull),
+        "default": column.default_value,
+        "is_pk": bool(column.is_pk),
+        "pk_position": column.is_pk,
+        "hidden": column.hidden,
+    }
+
+
+class ColumnDetailsExtra(Extra):
+    description = (
+        "SQLite schema details for columns in this table. The dictionary maps "
+        "column names to objects describing the schema for each column."
+    )
+    docs_note = (
+        "Each object has ``type`` as the declared type string returned by "
+        'SQLite, or ``""`` if no type was declared; ``sqlite_type`` as the '
+        "normalized SQLite affinity, one of ``TEXT``, ``INTEGER``, ``REAL``, "
+        "``BLOB`` or ``NUMERIC``; ``notnull`` as a boolean; ``default`` "
+        'as the raw SQL default expression string, such as ``"42"``, '
+        "``\"'hello'\"`` or ``\"datetime('now')\"``, or ``null`` if there is "
+        "no default; ``is_pk`` as a boolean; ``pk_position`` as the integer "
+        "primary key position reported by SQLite, or ``0`` for columns that "
+        "are not part of the primary key; and ``hidden`` as the integer value "
+        "reported by SQLite's ``PRAGMA table_xinfo``. ``hidden`` is ``0`` for "
+        "normal columns, ``1`` for hidden virtual table columns, ``2`` for "
+        "virtual generated columns and ``3`` for stored generated columns."
+    )
+    example = ExtraExample("/fixtures/binary_data.json?_size=0&_extra=column_details")
+    examples = {
+        ExtraScope.ROW: ExtraExample(
+            "/fixtures/binary_data/1.json?_extra=column_details"
+        )
+    }
+    scopes = {ExtraScope.TABLE, ExtraScope.ROW}
+
+    async def resolve(self, context):
+        column_details = await context.datasette._get_resource_column_details(
+            context.database_name, context.table_name
+        )
+        return {
+            column_name: column_detail_as_json(column)
+            for column_name, column in column_details.items()
+        }
 
 
 class ActionsExtra(Extra):
@@ -1167,7 +1235,6 @@ TABLE_EXTRA_BUNDLES = {
         "count",
         "count_sql",
         "human_description_en",
-        "next_url",
         "metadata",
         "query",
         "columns",
@@ -1196,16 +1263,17 @@ TABLE_EXTRA_BUNDLES = {
 
 TABLE_EXTRA_CLASSES = [
     CountExtra,
+    CountTruncatedExtra,
     CountSqlExtra,
     FacetResultsExtra,
     FacetsTimedOutExtra,
     SuggestedFacetsExtra,
     FacetInstancesProvider,
     HumanDescriptionEnExtra,
-    NextUrlExtra,
     ColumnsExtra,
     AllColumnsExtra,
     PrimaryKeysExtra,
+    ColumnDetailsExtra,
     DisplayColumnsAndRowsProvider,
     DisplayColumnsExtra,
     DisplayRowsExtra,

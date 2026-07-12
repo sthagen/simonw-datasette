@@ -50,7 +50,7 @@ The one exception is the "root" account, which you can sign into while using Dat
 The ``--root`` flag is designed for local development and testing. When you start Datasette with ``--root``, the root user automatically receives every permission, including:
 
 * All view permissions (``view-instance``, ``view-database``, ``view-table``, etc.)
-* All write permissions (``insert-row``, ``update-row``, ``delete-row``, ``create-table``, ``alter-table``, ``set-column-type``, ``drop-table``)
+* All write permissions (``insert-row``, ``update-row``, ``delete-row``, ``create-table``, ``create-view``, ``alter-table``, ``set-column-type``, ``drop-table``, ``drop-view``)
 * Debug permissions (``permissions-debug``, ``debug-menu``)
 * Any custom permissions defined by plugins
 
@@ -991,7 +991,9 @@ The ``/-/create-token`` page cannot be accessed by actors that are authenticated
 
 Datasette plugins that implement their own form of API token authentication should follow this convention.
 
-You can disable the signed token feature entirely using the :ref:`allow_signed_tokens <setting_allow_signed_tokens>` setting.
+If a request presents a token that a token handler recognizes but rejects - an invalid signature, a malformed payload or an expired token - Datasette responds with a ``401`` status, the :ref:`standard JSON error format <json_api_errors>` and a ``WWW-Authenticate: Bearer error="invalid_token"`` header. This means API clients can distinguish "your token needs to be renewed" (``401``) from "your token does not grant this permission" (``403``). A ``Bearer`` token that no registered handler recognizes at all is ignored, since it may be intended for an authentication plugin.
+
+You can disable the signed token feature entirely using the :ref:`allow_signed_tokens <setting_allow_signed_tokens>` setting. Requests presenting a ``dstok_`` token while the feature is disabled receive a ``401``.
 
 .. _authentication_cli_create_token:
 
@@ -1149,6 +1151,8 @@ It also provides an interface for running hypothetical permission checks against
 
 This is designed to help administrators and plugin authors understand exactly how permission checks are being carried out, in order to effectively configure Datasette's permission system.
 
+These debug endpoints are exempt from the :ref:`JSON API stability promise <json_api_stability>` - their JSON shapes may change in future releases.
+
 .. _AllowedResourcesView:
 
 Allowed resources view
@@ -1158,7 +1162,7 @@ The ``/-/allowed`` endpoint displays resources that the current actor can access
 
 This endpoint provides an interactive HTML form interface. Add ``.json`` to the URL path (e.g. ``/-/allowed.json``) to get the raw JSON response instead.
 
-Pass ``?action=view-table`` (or another action) to select the action. Optional ``parent=`` and ``child=`` query parameters can narrow the results to a specific database/table pair.
+Pass ``?action=view-table`` (or another action) to select the action. Optional ``parent=`` and ``child=`` query parameters can narrow the results to a specific database/table pair. Results are paginated: ``?_size=`` sets the page size (default 50, maximum 200, ``max`` for the maximum) and ``?_page=`` selects a page.
 
 This endpoint is publicly accessible to help users understand their own permissions. The potentially sensitive ``reason`` field is only shown to users with the ``permissions-debug`` permission - it shows the plugins and explanatory reasons that were responsible for each decision.
 
@@ -1171,7 +1175,7 @@ The ``/-/rules`` endpoint displays all permission rules (both allow and deny) fo
 
 This endpoint provides an interactive HTML form interface. Add ``.json`` to the URL path (e.g. ``/-/rules.json?action=view-table``) to get the raw JSON response instead.
 
-Pass ``?action=`` as a query parameter to specify which action to check.
+Pass ``?action=`` as a query parameter to specify which action to check. The ``?_size=`` and ``?_page=`` pagination parameters work the same as on ``/-/allowed``.
 
 This endpoint requires the ``permissions-debug`` permission.
 
@@ -1389,6 +1393,16 @@ Actor is allowed to create a database table.
 ``resource`` - ``datasette.resources.DatabaseResource(database)``
     ``database`` is the name of the database (string)
 
+.. _actions_create_view:
+
+create-view
+-----------
+
+Actor is allowed to create a database view.
+
+``resource`` - ``datasette.resources.DatabaseResource(database)``
+    ``database`` is the name of the database (string)
+
 .. _actions_alter_table:
 
 alter-table
@@ -1424,6 +1438,18 @@ Actor is allowed to drop a database table.
     ``database`` is the name of the database (string)
 
     ``table`` is the name of the table (string)
+
+.. _actions_drop_view:
+
+drop-view
+---------
+
+Actor is allowed to drop a database view.
+
+``resource`` - ``datasette.resources.TableResource(database, table)``
+    ``database`` is the name of the database (string)
+
+    ``table`` is the name of the view (string)
 
 .. _actions_execute_sql:
 

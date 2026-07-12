@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup as Soup
 from datasette.app import Datasette
 from datasette.resources import DatabaseResource, QueryResource
 from datasette.stored_queries import StoredQuery, StoredQueryPage
+from datasette.utils import UNSTABLE_API_MESSAGE
 from datasette.utils.asgi import Forbidden
 from datasette.utils.sqlite import sqlite3, supports_returning
 
@@ -879,7 +880,7 @@ async def test_query_list_html_defaults_to_twenty_and_shows_pagination():
     assert response.text.count('aria-label="Query pagination"') == 1
     assert "Demo query 20" in response.text
     assert "Demo query 21" not in response.text
-    assert 'href="/data/-/queries?_next=' in response.text
+    assert 'href="http://localhost/data/-/queries?_next=' in response.text
     assert len(json_response.json()["queries"]) == 25
 
 
@@ -1123,6 +1124,47 @@ async def test_query_update_api_rejects_config_only_fields():
     query = await ds.get_query("data", "editable")
     assert query.description_html is None
     assert query.on_success_message_sql is None
+
+
+@pytest.mark.asyncio
+async def test_query_api_rejects_params_alias():
+    # "params" is a datasette.yaml configuration key, not an API input -
+    # the API only accepts "parameters"
+    ds = Datasette(memory=True, default_deny=True)
+    ds.root_enabled = True
+    db = ds.add_memory_database("query_params_alias", name="data")
+    await db.execute_write("create table dogs (id integer primary key, name text)")
+    await ds.invoke_startup()
+
+    store_response = await ds.client.post(
+        "/data/-/queries/store",
+        actor={"id": "root"},
+        json={
+            "query": {
+                "name": "by_name",
+                "sql": "select * from dogs where name = :name",
+                "params": ["name"],
+            }
+        },
+    )
+    assert store_response.status_code == 400
+    assert store_response.json()["errors"] == ["Invalid keys: params"]
+    assert await ds.get_query("data", "by_name") is None
+
+    await ds.add_query(
+        "data",
+        "editable",
+        "select * from dogs where name = :name",
+        source="user",
+        owner_id="root",
+    )
+    update_response = await ds.client.post(
+        "/data/editable/-/update",
+        actor={"id": "root"},
+        json={"update": {"params": ["name"]}},
+    )
+    assert update_response.status_code == 400
+    assert update_response.json()["errors"] == ["Invalid keys: params"]
 
 
 @pytest.mark.asyncio
@@ -1583,6 +1625,66 @@ async def test_create_query_analyze_endpoint_uses_sql_only():
     assert blank_data["analysis_rows"] == []
     assert blank_data["save_disabled"] is True
     assert old_analyze_response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_query_supports_recursive_cte():
+    ds = Datasette(memory=True, default_deny=True)
+    ds.root_enabled = True
+    db = ds.add_memory_database("query_create_recursive_cte", name="data")
+    await db.execute_write("create table dogs (id integer primary key, name text)")
+    await ds.invoke_startup()
+
+    sql = """
+    with recursive dog_tree(id, name) as (
+        select id, name from dogs
+        union all
+        select id + 1, name from dog_tree where id < 3
+    )
+    select name from dog_tree
+    """.strip()
+
+    analysis_response = await ds.client.get(
+        "/data/-/queries/analyze",
+        actor={"id": "root"},
+        params={"sql": sql},
+    )
+    form_response = await ds.client.get(
+        "/data/-/queries/store",
+        actor={"id": "root"},
+        params={"sql": sql},
+    )
+    store_response = await ds.client.post(
+        "/data/-/queries/store",
+        actor={"id": "root"},
+        data={
+            "name": "dog-tree",
+            "title": "Dog tree",
+            "sql": sql,
+            "is_private": "1",
+        },
+    )
+
+    assert analysis_response.status_code == 200
+    analysis_data = analysis_response.json()
+    assert analysis_data["ok"] is True
+    assert analysis_data["analysis_error"] is None
+    assert analysis_data["analysis_is_write"] is False
+    assert analysis_data["save_disabled"] is False
+
+    assert form_response.status_code == 200
+    soup = Soup(form_response.text, "html.parser")
+    submit = soup.select_one("[data-query-create-submit]")
+    assert submit is not None
+    assert not submit.has_attr("disabled")
+    assert "This is a read-only query." in form_response.text
+
+    assert store_response.status_code == 302
+    assert store_response.headers["location"] == "/data/dog-tree"
+    query = await ds.get_query("data", "dog-tree")
+    assert query is not None
+    assert query.sql == sql
+    assert query.is_write is False
 
 
 @pytest.mark.asyncio
@@ -2080,7 +2182,11 @@ async def test_query_parameters_endpoint_uses_get_sql_only():
     )
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "parameters": ["name", "id"]}
+    assert response.json() == {
+        "ok": True,
+        "unstable": UNSTABLE_API_MESSAGE,
+        "parameters": ["name", "id"],
+    }
     assert permission_denied_response.status_code == 403
     assert permission_denied_response.json()["errors"] == [
         "Permission denied: need execute-sql"
@@ -3033,9 +3139,9 @@ async def test_untrusted_stored_write_query_rejects_virtual_table_control_insert
     )
 
     assert denied_response.status_code == 403
-    assert denied_response.json()["message"] == (
+    assert denied_response.json()["errors"] == [
         "Writes to virtual tables are not allowed in user-supplied SQL"
-    )
+    ]
     assert (
         await db.execute("select count(*) from docs where docs match 'hello'")
     ).first()[0] == 1
@@ -3154,6 +3260,74 @@ async def test_execute_write_create_table_uses_create_table_permission():
     assert not await db.table_exists("should_not_exist")
 
 
+@pytest.mark.asyncio
+async def test_execute_write_create_view_uses_create_view_permission():
+    ds = Datasette(
+        memory=True,
+        default_deny=True,
+        config={
+            "permissions": {
+                "insert-row": {"id": "row-writer"},
+                "update-row": {"id": "row-writer"},
+            },
+            "databases": {
+                "data": {
+                    "permissions": {
+                        "view-database": {"id": ["creator", "row-writer"]},
+                        "execute-write-sql": {"id": ["creator", "row-writer"]},
+                        "create-view": {"id": "creator"},
+                    }
+                }
+            },
+        },
+    )
+    db = ds.add_memory_database("execute_write_create_view", name="data")
+    await db.execute_write("create table dogs (id integer primary key, name text)")
+    await ds.invoke_startup()
+
+    analysis_response = await ds.client.get(
+        "/data/-/execute-write/analyze",
+        actor={"id": "creator"},
+        params={"sql": "create view dog_names as select id, name from dogs"},
+    )
+    allowed_response = await ds.client.post(
+        "/data/-/execute-write",
+        actor={"id": "creator"},
+        json={"sql": "create view dog_names as select id, name from dogs"},
+    )
+    row_permission_response = await ds.client.post(
+        "/data/-/execute-write",
+        actor={"id": "row-writer"},
+        json={"sql": "create view should_not_exist as select id from dogs"},
+    )
+
+    assert analysis_response.status_code == 200
+    analysis_data = analysis_response.json()
+    assert analysis_data["ok"] is True
+    assert analysis_data["execute_disabled"] is False
+    assert analysis_data["analysis_rows"] == [
+        {
+            "operation": "create",
+            "database": "data",
+            "table": "dog_names",
+            "required_permission": "create-view",
+            "source": None,
+            "allowed": True,
+        }
+    ]
+
+    assert allowed_response.status_code == 200
+    assert allowed_response.json()["ok"] is True
+    assert allowed_response.json()["message"] == "Query executed"
+    assert await db.view_exists("dog_names")
+
+    assert row_permission_response.status_code == 403
+    assert row_permission_response.json()["errors"] == [
+        "Permission denied: need create-view on data"
+    ]
+    assert not await db.view_exists("should_not_exist")
+
+
 @pytest.mark.parametrize(
     (
         "database_name",
@@ -3204,8 +3378,20 @@ async def test_execute_write_create_table_uses_create_table_permission():
             (),
             "drop-table",
         ),
+        (
+            "execute_write_drop_view",
+            "dropper",
+            "drop view dogs_view",
+            "drop view cats_view",
+            "Permission denied: need drop-view on data/cats_view",
+            (
+                "create view dogs_view as select * from dogs",
+                "create view cats_view as select * from cats",
+            ),
+            "drop-view",
+        ),
     ),
-    ids=("alter-table", "create-index", "drop-index", "drop-table"),
+    ids=("alter-table", "create-index", "drop-index", "drop-table", "drop-view"),
 )
 @pytest.mark.asyncio
 async def test_execute_write_schema_operations_use_schema_permissions(
@@ -3240,7 +3426,12 @@ async def test_execute_write_schema_operations_use_schema_permissions(
                                 "drop-table": {"id": "dropper"},
                                 "view-table": {"id": "alterer"},
                             }
-                        }
+                        },
+                        "dogs_view": {
+                            "permissions": {
+                                "drop-view": {"id": "dropper"},
+                            }
+                        },
                     },
                 }
             },
@@ -3293,6 +3484,9 @@ async def test_execute_write_schema_operations_use_schema_permissions(
     elif expected_state == "drop-table":
         assert not await db.table_exists("dogs")
         assert await db.table_exists("cats")
+    elif expected_state == "drop-view":
+        assert not await db.view_exists("dogs_view")
+        assert await db.view_exists("cats_view")
 
 
 @pytest.mark.asyncio
@@ -3594,3 +3788,81 @@ async def test_stored_write_query_with_truncated_returning_message():
     assert response.status_code == 200
     assert response.json()["ok"] is True
     assert response.json()["message"] == "Query executed"
+
+
+@pytest.mark.asyncio
+async def test_query_delete_api_rejects_trusted_queries():
+    ds = Datasette(
+        memory=True,
+        default_deny=True,
+        config={
+            "databases": {
+                "data": {
+                    "permissions": {
+                        "view-query": {"id": "editor"},
+                        "delete-query": {"id": "editor"},
+                    },
+                    "queries": {
+                        "trusted_report": {
+                            "sql": "select 1 as one",
+                        },
+                    },
+                }
+            }
+        },
+    )
+    ds.add_memory_database("query_delete_trusted_api", name="data")
+    await ds.invoke_startup()
+
+    response = await ds.client.post(
+        "/data/trusted_report/-/delete",
+        actor={"id": "editor"},
+        json={},
+    )
+    assert response.status_code == 403
+    assert response.json()["errors"] == [
+        "Trusted queries cannot be deleted using the API"
+    ]
+    # The query must still exist
+    assert await ds.get_query("data", "trusted_report") is not None
+
+    # The HTML confirmation page refuses too
+    get_response = await ds.client.get(
+        "/data/trusted_report/-/delete",
+        actor={"id": "editor"},
+    )
+    assert get_response.status_code == 403
+
+    # datasette.remove_query() remains available for internal use
+    await ds.remove_query("data", "trusted_report")
+    assert await ds.get_query("data", "trusted_report") is None
+
+
+@pytest.mark.asyncio
+async def test_stored_query_json_uses_parameters_not_params():
+    ds = Datasette(
+        memory=True,
+        config={
+            "databases": {
+                "data": {
+                    "queries": {
+                        "with_params": {
+                            "sql": "select :name as name, :age as age",
+                            "params": ["name", "age"],
+                        },
+                    },
+                }
+            }
+        },
+    )
+    ds.add_memory_database("query_parameters_key", name="data")
+    await ds.invoke_startup()
+
+    definition = (await ds.client.get("/data/with_params/-/definition")).json()
+    assert definition["query"]["parameters"] == ["name", "age"]
+    assert "params" not in definition["query"]
+
+    listing = (await ds.client.get("/data/-/queries.json")).json()
+    query = [q for q in listing["queries"] if q["name"] == "with_params"][0]
+    assert query["parameters"] == ["name", "age"]
+    assert "params" not in query

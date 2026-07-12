@@ -111,6 +111,7 @@ from .utils import (
     baseconv,
     call_with_supported_arguments,
     detect_json1,
+    add_cors_headers,
     display_actor,
     escape_css_string,
     escape_sqlite,
@@ -130,8 +131,10 @@ from .utils import (
     redact_keys,
     row_sql_params_pks,
 )
+from .tokens import TokenInvalid
 from .utils.asgi import (
     AsgiLifespan,
+    BadRequest,
     Forbidden,
     NotFound,
     DatabaseNotFound,
@@ -205,6 +208,11 @@ SETTINGS = (
         "max_insert_rows",
         100,
         "Maximum rows that can be inserted at a time using the bulk insert API",
+    ),
+    Setting(
+        "max_post_body_bytes",
+        2 * 1024 * 1024,
+        "Maximum size in bytes for a POST body read into memory, e.g. JSON API requests - set 0 to disable this limit",
     ),
     Setting(
         "num_sql_threads",
@@ -905,7 +913,9 @@ class Datasette:
         Verify an API token by trying all registered token handlers.
 
         Returns an actor dict from the first handler that recognizes the
-        token, or None if no handler accepts it.
+        token, or None if no handler accepts it. A handler may raise
+        TokenInvalid for a token it recognizes but rejects (bad signature,
+        expired) - Datasette turns that into a 401 response.
         """
         for token_handler in self._token_handlers():
             result = await token_handler.verify_token(self, token)
@@ -2168,6 +2178,18 @@ class Datasette:
             for name, d in self.databases.items()
         ]
 
+    async def _connected_databases_for_actor(self, actor):
+        page = await self.allowed_resources("view-database", actor)
+        allowed_names = {resource.parent async for resource in page.all()}
+        return [
+            database
+            for database in self._connected_databases()
+            if database["name"] in allowed_names
+        ]
+
+    async def _databases_data(self, request):
+        return {"databases": await self._connected_databases_for_actor(request.actor)}
+
     def _versions(self):
         conn = sqlite3.connect(":memory:")
         self._prepare_connection(conn, "_memory")
@@ -2514,8 +2536,8 @@ class Datasette:
         def add_route(view, regex):
             routes.append((regex, view))
 
-        add_route(IndexView.as_view(self), r"/(\.(?P<format>jsono?))?$")
-        add_route(IndexView.as_view(self), r"/-/(\.(?P<format>jsono?))?$")
+        add_route(IndexView.as_view(self), r"/(\.(?P<format>json))?$")
+        add_route(IndexView.as_view(self), r"/-/(\.(?P<format>json))?$")
         add_route(permanent_redirect("/-/"), r"/-$")
         add_route(favicon, "/favicon.ico")
 
@@ -2551,7 +2573,10 @@ class Datasette:
         )
         add_route(
             JsonDataView.as_view(
-                self, "plugins.json", self._plugins, needs_request=True
+                self,
+                "plugins.json",
+                lambda request: {"plugins": self._plugins(request)},
+                needs_request=True,
             ),
             r"/-/plugins(\.(?P<format>json))?$",
         )
@@ -2564,11 +2589,18 @@ class Datasette:
             r"/-/config(\.(?P<format>json))?$",
         )
         add_route(
-            JsonDataView.as_view(self, "threads.json", self._threads),
+            JsonDataView.as_view(
+                self, "threads.json", self._threads, permission="permissions-debug"
+            ),
             r"/-/threads(\.(?P<format>json))?$",
         )
         add_route(
-            JsonDataView.as_view(self, "databases.json", self._connected_databases),
+            JsonDataView.as_view(
+                self,
+                "databases.json",
+                self._databases_data,
+                needs_request=True,
+            ),
             r"/-/databases(\.(?P<format>json))?$",
         )
         add_route(
@@ -2581,7 +2613,7 @@ class Datasette:
             JsonDataView.as_view(
                 self,
                 "actions.json",
-                self._actions,
+                lambda: {"actions": self._actions()},
                 template="debug_actions.html",
                 permission="permissions-debug",
             ),
@@ -2789,6 +2821,10 @@ class Datasette:
         db, table_name, _ = await self.resolve_table(request)
         pk_values = urlsafe_components(request.url_vars["pks"])
         sql, params, pks = await row_sql_params_pks(db, table_name, pk_values)
+        if len(pk_values) != len(pks):
+            raise BadRequest(
+                "URL row identifier does not match the primary key for this table"
+            )
         results = await db.execute(sql, params, truncate=True)
         row = results.first()
         if row is None:
@@ -2847,7 +2883,11 @@ class DatasetteRouter:
         if base_url != "/" and path.startswith(base_url):
             path = "/" + path[len(base_url) :]
             scope = dict(scope, route_path=path)
-        request = Request(scope, receive)
+        request = Request(
+            scope,
+            receive,
+            max_post_body_bytes=self.ds.setting("max_post_body_bytes"),
+        )
         # Populate request_messages if ds_messages cookie is present
         try:
             request._messages = self.ds.unsign(
@@ -2867,13 +2907,24 @@ class DatasetteRouter:
         # Handle authentication
         default_actor = scope.get("actor") or None
         actor = None
+        token_error = None
         results = pm.hook.actor_from_request(datasette=self.ds, request=request)
         for result in results:
-            result = await await_me_maybe(result)
+            try:
+                result = await await_me_maybe(result)
+            except TokenInvalid as ex:
+                # A presented token was recognized but rejected - fail the
+                # request with a 401 even if another credential is valid,
+                # but keep awaiting the remaining coroutines first
+                if token_error is None:
+                    token_error = ex
+                continue
             if result and actor is None:
                 actor = result
                 # Don't break — we must await all coroutines to avoid
                 # "coroutine was never awaited" warnings
+        if token_error is not None:
+            return await self.handle_401(request, send, token_error)
         scope_modifications["actor"] = actor or default_actor
         scope = dict(scope, **scope_modifications)
 
@@ -2904,6 +2955,15 @@ class DatasetteRouter:
                 return await custom_response.asgi_send(send)
         except Exception as exception:
             return await self.handle_exception(request, send, exception)
+
+    async def handle_401(self, request, send, exception):
+        # A presented bearer token was recognized by a handler but rejected.
+        # Bearer tokens are API credentials, so this is always JSON.
+        headers = {"www-authenticate": 'Bearer error="invalid_token"'}
+        if self.ds.cors:
+            add_cors_headers(headers)
+        response = Response.error([str(exception)], 401, headers=headers)
+        await response.asgi_send(send)
 
     async def handle_404(self, request, send, exception=None):
         # If path contains % encoding, redirect to tilde encoding

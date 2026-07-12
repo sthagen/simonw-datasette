@@ -1,5 +1,8 @@
 import pytest
-import sqlite_utils
+import sqlite3
+
+from datasette.utils import escape_sqlite
+from datasette.utils.internal_db import INTERNAL_DB_SCHEMA_SQL
 
 
 # ensure refresh_schemas() gets called before interacting with internal_db
@@ -14,6 +17,53 @@ async def test_internal_databases(ds_client):
     databases = await internal_db.execute("select * from catalog_databases")
     assert len(databases) == 1
     assert databases.rows[0]["database_name"] == "fixtures"
+
+
+@pytest.mark.asyncio
+async def test_internal_migrations_recorded(ds_client):
+    internal_db = await ensure_internal(ds_client)
+    migrations = await internal_db.execute("""
+        select migration_set, name
+        from _sqlite_migrations
+        order by id
+        """)
+    assert [tuple(row) for row in migrations.rows] == [
+        ("datasette_internal", "0001_initial")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_internal_migrations_adopt_existing_internal_db(tmp_path):
+    from datasette.app import Datasette
+
+    internal_db_path = str(tmp_path / "internal.db")
+    conn = sqlite3.connect(internal_db_path)
+    conn.executescript(INTERNAL_DB_SCHEMA_SQL)
+    conn.execute(
+        "insert into metadata_instance (key, value) values (?, ?)",
+        ("legacy", "preserved"),
+    )
+    conn.commit()
+    conn.close()
+
+    ds = Datasette(internal=internal_db_path)
+    await ds.invoke_startup()
+    internal_db = ds.get_internal_database()
+
+    metadata = await internal_db.execute(
+        "select key, value from metadata_instance where key = 'legacy'"
+    )
+    assert [tuple(row) for row in metadata.rows] == [("legacy", "preserved")]
+    migrations = await internal_db.execute("""
+        select migration_set, name
+        from _sqlite_migrations
+        order by id
+        """)
+    assert [tuple(row) for row in migrations.rows] == [
+        ("datasette_internal", "0001_initial")
+    ]
+
+    ds.close()
 
 
 @pytest.mark.asyncio
@@ -76,19 +126,71 @@ async def test_internal_foreign_key_references(ds_client):
     internal_db = await ensure_internal(ds_client)
 
     def inner(conn):
-        db = sqlite_utils.Database(conn)
-        table_names = db.table_names()
-        for table in db.tables:
-            for fk in table.foreign_keys:
-                other_table = fk.other_table
-                other_column = fk.other_column
-                message = 'Column "{}.{}" references other column "{}.{}" which does not exist'.format(
-                    table.name, fk.column, other_table, other_column
+        table_names = [
+            row[0]
+            for row in conn.execute(
+                "select name from sqlite_master where type = 'table'"
+            ).fetchall()
+        ]
+
+        def columns_for_table(table_name):
+            return {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info({})".format(escape_sqlite(table_name))
+                ).fetchall()
+            }
+
+        def primary_keys_for_table(table_name):
+            return [
+                name
+                for _, name in sorted(
+                    (row[5], row[1])
+                    for row in conn.execute(
+                        "PRAGMA table_info({})".format(escape_sqlite(table_name))
+                    ).fetchall()
+                    if row[5]
+                )
+            ]
+
+        columns_by_table = {
+            table_name: columns_for_table(table_name) for table_name in table_names
+        }
+
+        for table_name in table_names:
+            foreign_key_rows = conn.execute(
+                "PRAGMA foreign_key_list({})".format(escape_sqlite(table_name))
+            ).fetchall()
+            foreign_keys_by_id = {}
+            for foreign_key in foreign_key_rows:
+                foreign_keys_by_id.setdefault(foreign_key[0], []).append(foreign_key)
+
+            for foreign_key_rows in foreign_keys_by_id.values():
+                foreign_key_rows.sort(key=lambda row: row[1])
+                other_table = foreign_key_rows[0][2]
+                other_columns = [row[4] for row in foreign_key_rows]
+                message = 'Column "{}.{}" references other table "{}" which does not exist'.format(
+                    table_name, foreign_key_rows[0][3], other_table
                 )
                 assert other_table in table_names, message + " (bad table)"
-                assert other_column in db[other_table].columns_dict, (
-                    message + " (bad column)"
+                if all(other_column is None for other_column in other_columns):
+                    other_columns = primary_keys_for_table(other_table)
+                length_message = 'Foreign key from "{}" to "{}" has {} columns but references {} columns'.format(
+                    table_name,
+                    other_table,
+                    len(foreign_key_rows),
+                    len(other_columns),
                 )
+                assert len(other_columns) == len(foreign_key_rows), length_message
+
+                for foreign_key, other_column in zip(foreign_key_rows, other_columns):
+                    column = foreign_key[3]
+                    message = 'Column "{}.{}" references other column "{}.{}" which does not exist'.format(
+                        table_name, column, other_table, other_column
+                    )
+                    assert other_column in columns_by_table[other_table], (
+                        message + " (bad column)"
+                    )
 
     await internal_db.execute_fn(inner)
 

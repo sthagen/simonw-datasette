@@ -1027,6 +1027,7 @@ async def test_database_create_table_action_button_and_data():
                 "databaseName": "data",
                 "columnTypes": ["text", "integer", "float", "blob"],
                 "defaultExpressions": DEFAULT_EXPRESSION_OPTIONS,
+                "canInsertRows": False,
             },
         }
         assert "customColumnTypes" not in database_data_from_soup(soup)["createTable"]
@@ -1046,6 +1047,40 @@ async def test_database_create_table_action_button_and_data():
             "_datasetteDatabaseData" in (script.string or "")
             for script in soup_without_permission.find_all("script")
         )
+    finally:
+        ds.close()
+
+
+@pytest.mark.asyncio
+async def test_database_create_table_data_includes_insert_row_permission():
+    ds = Datasette(
+        [],
+        config={
+            "databases": {
+                "data": {
+                    "permissions": {
+                        "create-table": {"id": "root"},
+                        "insert-row": {"id": "root"},
+                    },
+                },
+            },
+        },
+    )
+    try:
+        db = ds.add_database(
+            Database(ds, memory_name="test_database_create_table_insert_permission"),
+            name="data",
+        )
+        await db.execute_write_script("""
+            create table items (id integer primary key, name text);
+            """)
+
+        response = await ds.client.get("/data", actor={"id": "root"})
+        assert response.status_code == 200
+        create_table_data = database_data_from_soup(Soup(response.text, "html.parser"))[
+            "createTable"
+        ]
+        assert create_table_data["canInsertRows"] is True
     finally:
         ds.close()
 
@@ -1316,6 +1351,7 @@ async def test_table_insert_action_button_and_data():
         assert insert_data["path"] == "/data/items/-/insert"
         assert insert_data["tableName"] == "items"
         assert insert_data["primaryKeys"] == ["id"]
+        assert insert_data["maxInsertRows"] == 100
         assert [column["name"] for column in insert_data["columns"]] == [
             "name",
             "score",
@@ -1629,7 +1665,7 @@ async def test_row_update_sets_message():
             json={"update": {"name": long_name}, "return": True},
         )
         assert response.status_code == 200
-        assert response.json()["row"]["name"] == long_name
+        assert response.json()["rows"][0]["name"] == long_name
         assert ds.unsign(response.cookies["ds_messages"], "messages") == [
             ["Updated row 1 ({})".format(truncated_name), ds.INFO]
         ]
@@ -1979,8 +2015,8 @@ async def test_sort_errors(ds_client, json, params, error):
         assert response.json() == {
             "ok": False,
             "error": error,
+            "errors": [error],
             "status": 400,
-            "title": None,
         }
     else:
         assert error in response.text
@@ -2313,6 +2349,7 @@ async def test_foreign_key_labels_obey_permissions(config):
     assert root_b.json() == {
         "ok": True,
         "next": None,
+        "next_url": None,
         "rows": [{"id": 1, "name": "world", "a_id": {"value": 1, "label": "hello"}}],
         "truncated": False,
     }
@@ -2320,6 +2357,7 @@ async def test_foreign_key_labels_obey_permissions(config):
     assert anon_b.json() == {
         "ok": True,
         "next": None,
+        "next_url": None,
         "rows": [{"id": 1, "name": "world", "a_id": 1}],
         "truncated": False,
     }

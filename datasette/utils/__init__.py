@@ -1,4 +1,5 @@
 import asyncio
+import binascii
 from contextlib import contextmanager
 import aiofiles
 import click
@@ -236,10 +237,8 @@ class CustomJSONEncoder(json.JSONEncoder):
     - ``sqlite3.Row`` becomes a tuple
     - ``sqlite3.Cursor`` becomes a list
 
-    If a binary blob can be decoded as UTF-8, the encoder returns it as text.
-
-    If it can't (for example, images), it is encoded as an object, with the actual
-    data base64-encoded, like so: ::
+    Binary blobs are encoded as an object, with the actual data base64-encoded,
+    like so: ::
 
         {
             "$base64": True,
@@ -255,15 +254,40 @@ class CustomJSONEncoder(json.JSONEncoder):
         if isinstance(obj, sqlite3.Cursor):
             return list(obj)
         if isinstance(obj, bytes):
-            # Does it encode to utf8?
-            try:
-                return obj.decode("utf8")
-            except UnicodeDecodeError:
-                return {
-                    "$base64": True,
-                    "encoded": base64.b64encode(obj).decode("latin1"),
-                }
+            return {
+                "$base64": True,
+                "encoded": base64.b64encode(obj).decode("latin1"),
+            }
         return json.JSONEncoder.default(self, obj)
+
+
+class WriteJsonValueError(ValueError):
+    pass
+
+
+def decode_write_json_cell(value):
+    if not isinstance(value, dict):
+        return value
+    keys = set(value.keys())
+    if keys == {"$raw"}:
+        return value["$raw"]
+    if keys == {"$base64", "encoded"} and value.get("$base64") is True:
+        encoded = value["encoded"]
+        if not isinstance(encoded, str):
+            raise WriteJsonValueError("$base64 encoded value must be a string")
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except binascii.Error as ex:
+            raise WriteJsonValueError("Invalid $base64 encoded value") from ex
+    return value
+
+
+def decode_write_json_row(row):
+    return {key: decode_write_json_cell(value) for key, value in row.items()}
+
+
+def decode_write_json_rows(rows):
+    return [decode_write_json_row(row) for row in rows]
 
 
 @contextmanager
@@ -1264,10 +1288,20 @@ class StartupError(Exception):
     pass
 
 
-_single_line_comment_re = re.compile(r"--.*")
-_multi_line_comment_re = re.compile(r"/\*.*?\*/", re.DOTALL)
-_single_quote_re = re.compile(r"'(?:''|[^'])*'")
-_double_quote_re = re.compile(r'"(?:\"\"|[^"])*"')
+# Comments and string literals, matched in a single pass so that whichever
+# construct starts first "wins" - this ensures a comment marker inside a string
+# literal (or a quote inside a comment) does not confuse the parameter scan.
+_comments_and_strings_re = re.compile(
+    r"""
+    --[^\n]*            # single line comment
+    | /\*.*?(?:\*/|\Z)  # multi line comment, possibly to end-of-input
+    | '(?:''|[^'])*'    # single quoted string ('' escapes a quote)
+    | "(?:""|[^"])*"    # double quoted identifier ("" escapes a quote)
+    | \[(?:[^\]])*\]    # square-bracket quoted identifier
+    | `(?:``|[^`])*`    # backtick quoted identifier
+    """,
+    re.DOTALL | re.VERBOSE,
+)
 _named_param_re = re.compile(r":(\w+)")
 
 
@@ -1278,10 +1312,9 @@ def named_parameters(sql: str) -> List[str]:
 
     e.g. for ``select * from foo where id=:id`` this would return ``["id"]``
     """
-    sql = _single_line_comment_re.sub("", sql)
-    sql = _multi_line_comment_re.sub("", sql)
-    sql = _single_quote_re.sub("", sql)
-    sql = _double_quote_re.sub("", sql)
+    # Strip comments and string literals first so that any ":name" sequences
+    # inside them are not mistaken for named parameters
+    sql = _comments_and_strings_re.sub("", sql)
     # Extract parameters from what is left
     return _named_param_re.findall(sql)
 
@@ -1292,6 +1325,54 @@ async def derive_named_parameters(db: "Database", sql: str) -> List[str]:
     with plugins that were using it before it switched to named_parameters()
     """
     return named_parameters(sql)
+
+
+def parse_size_limit(value, default, maximum, name="_size"):
+    """
+    Parse a page-size parameter using the same semantics as the table
+    view's ?_size=: blank means default, "max" means maximum, integers
+    must be 0 or greater and no larger than maximum. Raises ValueError
+    with a message suitable for a 400 response.
+    """
+    if value in (None, ""):
+        return default
+    if value == "max":
+        return maximum
+    try:
+        size = int(value)
+        if size < 0:
+            raise ValueError
+    except ValueError:
+        raise ValueError("{} must be a positive integer".format(name))
+    if size > maximum:
+        raise ValueError("{} must be <= {}".format(name, maximum))
+    return size
+
+
+UNSTABLE_API_MESSAGE = (
+    "This API is not part of Datasette's stable interface and may change at any time"
+)
+
+
+def error_body(messages, status):
+    """
+    The canonical JSON error body used by every Datasette JSON error response:
+
+        {"ok": False, "error": "...", "errors": ["...", ...], "status": 400}
+
+    "error" is all of the messages joined with "; ", "errors" is the full
+    list, "status" matches the HTTP status code. Callers may add extra
+    context keys to the returned dictionary but must not remove these four.
+    """
+    if isinstance(messages, str):
+        messages = [messages]
+    messages = [str(message) for message in messages]
+    return {
+        "ok": False,
+        "error": "; ".join(messages),
+        "errors": messages,
+        "status": status,
+    }
 
 
 def add_cors_headers(headers):
