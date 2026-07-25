@@ -753,19 +753,7 @@ class Datasette:
             # Compare schema versions to see if we should skip it
             if schema_version == current_schema_versions.get(database_name):
                 continue
-            placeholders = "(?, ?, ?, ?)"
-            values = [database_name, str(db.path), db.is_memory, schema_version]
-            if db.path is None:
-                placeholders = "(?, null, ?, ?)"
-                values = [database_name, db.is_memory, schema_version]
-            await internal_db.execute_write(
-                """
-                INSERT OR REPLACE INTO catalog_databases (database_name, path, is_memory, schema_version)
-                VALUES {}
-            """.format(placeholders),
-                values,
-            )
-            await populate_schema_tables(internal_db, db)
+            await populate_schema_tables(internal_db, db, schema_version)
 
     @property
     def urls(self):
@@ -2575,7 +2563,7 @@ class Datasette:
             JsonDataView.as_view(
                 self,
                 "plugins.json",
-                lambda request: {"plugins": self._plugins(request)},
+                self._plugins,
                 needs_request=True,
             ),
             r"/-/plugins(\.(?P<format>json))?$",
