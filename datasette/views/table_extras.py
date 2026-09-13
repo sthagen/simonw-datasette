@@ -1206,7 +1206,10 @@ class ForeignKeyTablesExtra(Extra):
 
     async def resolve(self, context):
         return await context.foreign_key_tables(
-            context.database_name, context.table_name, context.pk_values
+            context.database_name,
+            context.table_name,
+            context.pk_values,
+            actor=context.request.actor,
         )
 
 

@@ -3,7 +3,6 @@
 {% block title %}Permission Rules{% endblock %}
 
 {% block extra_head %}
-<script src="{{ static('json-format-highlight-1.0.1.js') }}"></script>
 {% include "_permission_ui_styles.html" %}
 {% include "_debug_common_functions.html" %}
 {% endblock %}
@@ -185,7 +184,7 @@ function displayResults(data) {
     }
 
     // Update raw JSON
-    document.getElementById('raw-json').innerHTML = jsonFormatHighlight(data);
+    document.getElementById('raw-json').textContent = JSON.stringify(data, null, 2);
 }
 
 function displayError(data) {
@@ -195,7 +194,7 @@ function displayError(data) {
 
     resultsContent.innerHTML = `<div class="error-message">Error: ${escapeHtml(data.error || 'Unknown error')}</div>`;
 
-    document.getElementById('raw-json').innerHTML = jsonFormatHighlight(data);
+    document.getElementById('raw-json').textContent = JSON.stringify(data, null, 2);
 }
 
 </script>

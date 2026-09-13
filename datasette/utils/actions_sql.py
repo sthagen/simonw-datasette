@@ -29,6 +29,15 @@ from datasette.utils.permissions import gather_permission_sql_from_hooks
 
 if TYPE_CHECKING:
     from datasette.app import Datasette
+    from datasette.permissions import Action
+
+
+def _child_collation(action: "Action") -> str:
+    """Match resource identity without changing the spelling returned by SQL."""
+    resource_class = action.resource_class
+    if resource_class is not None and resource_class.case_insensitive_child:
+        return "NOCASE"
+    return "BINARY"
 
 
 async def build_allowed_resources_sql(
@@ -149,6 +158,7 @@ async def _build_single_action_sql(
         raise ValueError(f"Unknown action: {action}")
 
     # Get base resources SQL from the resource class
+    child_collation = _child_collation(action_obj)
     base_resources_sql = await action_obj.resource_class.resources_sql(
         datasette, actor=actor
     )
@@ -185,7 +195,7 @@ async def _build_single_action_sql(
         if permission_sql.sql is None:
             continue
         rule_sqls.append(f"""
-            SELECT parent, child, allow, reason, '{permission_sql.source}' AS source_plugin FROM (
+            SELECT parent, child COLLATE {child_collation} AS child, allow, reason, '{permission_sql.source}' AS source_plugin FROM (
                 {permission_sql.sql}
             )
             """.strip())
@@ -299,9 +309,9 @@ async def _build_single_action_sql(
         query_parts.extend(
             ["anon_child_agg AS ("]
             + _anon_agg(
-                "parent, child,",
+                f"parent, child COLLATE {child_collation} AS child,",
                 "parent IS NOT NULL AND child IS NOT NULL",
-                "parent, child",
+                f"parent, child COLLATE {child_collation}",
             )
             + ["),", "anon_parent_agg AS ("]
             + _anon_agg("parent,", "parent IS NOT NULL AND child IS NULL", "parent")
@@ -382,7 +392,8 @@ async def _build_single_action_sql(
         # Wrap each restriction_sql in a subquery to avoid operator precedence issues
         # with UNION ALL inside the restriction SQL statements
         restriction_intersect = "\nINTERSECT\n".join(
-            f"SELECT * FROM ({sql})" for sql in restriction_sqls
+            f"SELECT parent, child COLLATE {child_collation} AS child FROM ({sql})"
+            for sql in restriction_sqls
         )
         # Decompose by NULL-pattern so the final filter can use pure-equality
         # EXISTS lookups (satisfiable via automatic indexes) instead of a
@@ -480,6 +491,7 @@ async def build_permission_rules_sql(
     union_parts = []
     all_params = {}
     restriction_sqls = []
+    child_collation = _child_collation(action_obj)
 
     for permission_sql in permission_sqls:
         all_params.update(permission_sql.params or {})
@@ -493,7 +505,7 @@ async def build_permission_rules_sql(
             continue
 
         union_parts.append(f"""
-            SELECT parent, child, allow, reason, '{permission_sql.source}' AS source_plugin FROM (
+            SELECT parent, child COLLATE {child_collation} AS child, allow, reason, '{permission_sql.source}' AS source_plugin FROM (
                 {permission_sql.sql}
             )
             """.strip())
@@ -564,6 +576,7 @@ async def check_permissions_for_actions(
     verdicts = {}
 
     for i, (action, permission_sqls) in enumerate(zip(unique_actions, gathered)):
+        child_collation = _child_collation(datasette.actions[action])
         prefix = f"a{i}_"
         rule_parts = []
         restriction_parts = []
@@ -589,7 +602,7 @@ async def check_permissions_for_actions(
             if sql is None:
                 continue
             rule_parts.append(
-                f"SELECT parent, child, allow, reason, '{permission_sql.source}' AS source_plugin FROM (\n{sql}\n)"
+                f"SELECT parent, child COLLATE {child_collation} AS child, allow, reason, '{permission_sql.source}' AS source_plugin FROM (\n{sql}\n)"
             )
 
         if not rule_parts:
@@ -623,7 +636,8 @@ async def check_permissions_for_actions(
         if restriction_parts:
             # Database-level restrictions (parent, NULL) match all children
             restriction_intersect = "\nINTERSECT\n".join(
-                f"SELECT * FROM ({sql})" for sql in restriction_parts
+                f"SELECT parent, child COLLATE {child_collation} AS child FROM ({sql})"
+                for sql in restriction_parts
             )
             ctes.append(f"a{i}_restriction AS (\n{restriction_intersect}\n)")
             verdict_sql = f"""({verdict_sql}) AND EXISTS (
@@ -770,6 +784,7 @@ async def _explain_single_action(
     db = datasette.get_internal_database()
     matched_rules = []
     restrictions = []
+    child_collation = _child_collation(datasette.actions[action])
 
     for permission_sql in permission_sqls:
         params = dict(permission_sql.params or {})
@@ -784,7 +799,7 @@ async def _explain_single_action(
                 SELECT parent, child, allow, reason
                 FROM ({permission_sql.sql}) AS permission_rules
                 WHERE (parent IS NULL OR parent = :{parent_param})
-                  AND (child IS NULL OR child = :{child_param})
+                  AND (child IS NULL OR child COLLATE {child_collation} = :{child_param})
                 """,
                 params,
             )
@@ -811,7 +826,7 @@ async def _explain_single_action(
                     SELECT EXISTS(
                         SELECT 1 FROM ({permission_sql.restriction_sql}) AS restriction_rules
                         WHERE (parent IS NULL OR parent = :{parent_param})
-                          AND (child IS NULL OR child = :{child_param})
+                          AND (child IS NULL OR child COLLATE {child_collation} = :{child_param})
                     ) AS resource_is_in_allowlist
                     """,
                     params,

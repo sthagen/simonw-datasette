@@ -28,9 +28,11 @@ from datasette.utils import (
     path_with_format,
     path_with_removed_args,
     sqlite3,
+    tilde_decode,
     to_css_class,
 )
 from datasette.utils.asgi import Forbidden, NotFound, PayloadTooLarge, Response
+from datasette.utils.sqlite import check_structured_write_table
 
 from . import Context, from_extra
 from .base import BaseView, DatasetteError, stream_csv
@@ -135,6 +137,12 @@ class RowContext(Context):
     alternate_url_json: str = field(
         metadata={"help": "URL for the JSON version of this page"}
     )
+
+
+async def _database_and_table_resource_from_request(datasette, request):
+    db = await datasette.resolve_database(request)
+    table = tilde_decode(request.url_vars["table"])
+    return db, table, TableResource(database=db.name, table=table)
 
 
 class RowView(BaseView):
@@ -263,7 +271,7 @@ class RowView(BaseView):
         if ttl is None or not ttl.isdigit():
             ttl = self.ds.setting("default_cache_ttl")
 
-        return self.set_response_headers(response, ttl)
+        return self.set_response_headers(response, ttl, request)
 
     async def html(self, request, data, extra_template_data, templates):
         extras = {}
@@ -376,36 +384,50 @@ class RowView(BaseView):
             },
         )
 
-    def set_response_headers(self, response, ttl):
+    def set_response_headers(self, response, ttl, request=None):
+        private = getattr(request, "_datasette_private_response", False)
         # Set far-future cache expiry
         if self.ds.cache_headers and response.status == 200:
-            ttl = int(ttl)
-            if ttl == 0:
-                ttl_header = "no-cache"
+            if private:
+                # This response is only visible to the current actor (denied
+                # to anonymous requests), so it must never be stored by a
+                # shared cache/CDN - and ?_ttl= must not override that.
+                response.headers["Cache-Control"] = "private, no-store"
+                response.headers["Vary"] = "Cookie"
             else:
-                ttl_header = f"max-age={ttl}"
-            response.headers["Cache-Control"] = ttl_header
+                ttl = int(ttl)
+                if ttl == 0:
+                    ttl_header = "no-cache"
+                else:
+                    ttl_header = f"max-age={ttl}"
+                response.headers["Cache-Control"] = ttl_header
         response.headers["Referrer-Policy"] = "no-referrer"
         if self.ds.cors:
             add_cors_headers(response.headers)
         return response
 
     async def data(self, request, default_labels=False):
-        resolved = await self.ds.resolve_row(request)
-        db = resolved.db
+        db, table, resource = await _database_and_table_resource_from_request(
+            self.ds, request
+        )
         database = db.name
-        table = resolved.table
-        pk_values = resolved.pk_values
 
-        # Ensure user has permission to view this row
+        # Check the URL resource before resolving the row, so a denied request
+        # cannot distinguish an existing primary key from a missing one.
         visible, private = await self.ds.check_visibility(
             request.actor,
             action="view-table",
-            resource=TableResource(database=database, table=table),
+            resource=resource,
         )
         if not visible:
             raise Forbidden("You do not have permission to view this table")
+        # Record whether this response is private (visible to this actor
+        # only) so set_response_headers() can set appropriate Cache-Control
+        # headers, regardless of which output format ends up being rendered.
+        request._datasette_private_response = private
 
+        resolved = await self.ds.resolve_row(request)
+        pk_values = resolved.pk_values
         results = await resolved.db.execute(
             resolved.sql, resolved.params, truncate=True
         )
@@ -482,8 +504,8 @@ class RowView(BaseView):
             for row in display_rows:
                 for cell in row:
                     if cell["column"] in pk_set:
-                        cell["value"] = markupsafe.Markup(
-                            "<strong>{}</strong>".format(cell["value"])
+                        cell["value"] = markupsafe.Markup("<strong>{}</strong>").format(
+                            cell["value"]
                         )
 
             label_column = await db.label_column_for_table(table) if is_table else None
@@ -556,7 +578,7 @@ class RowView(BaseView):
                 "private": private,
                 "columns": reordered_columns,
                 "foreign_key_tables": await self.foreign_key_tables(
-                    database, table, pk_values
+                    database, table, pk_values, actor=request.actor
                 ),
                 "database_color": db.color,
                 "display_columns": display_columns,
@@ -633,12 +655,23 @@ class RowView(BaseView):
             ),
         )
 
-    async def foreign_key_tables(self, database, table, pk_values):
+    async def foreign_key_tables(self, database, table, pk_values, *, actor):
         if len(pk_values) != 1:
             return []
         db = self.ds.databases[database]
         all_foreign_keys = await db.get_all_foreign_keys()
-        foreign_keys = all_foreign_keys[table]["incoming"]
+        foreign_keys = []
+        table_permissions = {}
+        for fk in all_foreign_keys[table]["incoming"]:
+            other_table = fk["other_table"]
+            if other_table not in table_permissions:
+                table_permissions[other_table] = await self.ds.allowed(
+                    action="view-table",
+                    resource=TableResource(database=database, table=other_table),
+                    actor=actor,
+                )
+            if table_permissions[other_table]:
+                foreign_keys.append(fk)
         if len(foreign_keys) == 0:
             return []
 
@@ -695,9 +728,24 @@ def _truncated_row_flash_label(label):
     return label[: ROW_FLASH_LABEL_MAX_LENGTH - 1] + "\u2026"
 
 
-async def _row_flash_message(db, action, resolved, row=None):
+async def _row_flash_message(
+    datasette, request, action, resolved, row=None, *, refresh_row=False
+):
     pk_label = ", ".join(resolved.pk_values)
-    label_column = await db.label_column_for_table(resolved.table)
+    # Mutation permission does not grant access to stored row labels.
+    if not await datasette.allowed(
+        action="view-table",
+        resource=TableResource(database=resolved.db.name, table=resolved.table),
+        actor=request.actor,
+    ):
+        return f"{action} row {pk_label}"
+
+    if refresh_row and row is None:
+        results = await resolved.db.execute(
+            resolved.sql, resolved.params, truncate=True
+        )
+        row = results.first()
+    label_column = await resolved.db.label_column_for_table(resolved.table)
     label = row_label_from_label_column(row or resolved.row, label_column)
     if label:
         label = _truncated_row_flash_label(label)
@@ -710,21 +758,27 @@ async def _resolve_row_and_check_permission(datasette, request, permission):
     from datasette.app import DatabaseNotFound, RowNotFound, TableNotFound
 
     try:
-        resolved = await datasette.resolve_row(request)
+        _, _, resource = await _database_and_table_resource_from_request(
+            datasette, request
+        )
     except DatabaseNotFound as e:
         return False, Response.error([f"Database not found: {e.database_name}"], 404)
+
+    # Check the URL resource before resolving the row, so a denied request
+    # cannot distinguish an existing primary key from a missing one.
+    if not await datasette.allowed(
+        action=permission,
+        resource=resource,
+        actor=request.actor,
+    ):
+        return False, Response.error(["Permission denied"], 403)
+
+    try:
+        resolved = await datasette.resolve_row(request)
     except TableNotFound as e:
         return False, Response.error([f"Table not found: {e.table}"], 404)
     except RowNotFound as e:
         return False, Response.error([f"Record not found: {e.pk_values}"], 404)
-
-    # Ensure user has permission to delete this row
-    if not await datasette.allowed(
-        action=permission,
-        resource=TableResource(database=resolved.db.name, table=resolved.table),
-        actor=request.actor,
-    ):
-        return False, Response.error(["Permission denied"], 403)
 
     return True, resolved
 
@@ -744,6 +798,7 @@ class RowDeleteView(BaseView):
 
         # Delete table
         def delete_row(conn):
+            check_structured_write_table(conn, resolved.table)
             sqlite_utils.Database(conn)[resolved.table].delete(resolved.pk_values)
 
         try:
@@ -765,7 +820,7 @@ class RowDeleteView(BaseView):
             table_url = self.ds.urls.table(resolved.db.name, resolved.table)
             self.ds.add_message(
                 request,
-                await _row_flash_message(resolved.db, "Deleted", resolved),
+                await _row_flash_message(self.ds, request, "Deleted", resolved),
                 self.ds.INFO,
             )
             return Response.json({"ok": True, "redirect": str(table_url)}, status=200)
@@ -826,6 +881,7 @@ class RowUpdateView(BaseView):
             return Response.error(["Permission denied for alter-table"], 403)
 
         def update_row(conn):
+            check_structured_write_table(conn, resolved.table)
             sqlite_utils.Database(conn)[resolved.table].update(
                 resolved.pk_values, update, alter=alter
             )
@@ -838,7 +894,14 @@ class RowUpdateView(BaseView):
 
         result = {"ok": True}
         returned_row = None
-        if data.get("return"):
+        # Only read back and disclose the stored row if the actor is also
+        # allowed to view this table - update-row alone must not be usable
+        # to read data the actor cannot otherwise see.
+        if data.get("return") and await self.ds.allowed(
+            action="view-table",
+            resource=TableResource(database=resolved.db.name, table=resolved.table),
+            actor=request.actor,
+        ):
             results = await resolved.db.execute(
                 resolved.sql, resolved.params, truncate=True
             )
@@ -855,16 +918,15 @@ class RowUpdateView(BaseView):
         )
 
         if request.args.get("_message"):
-            message_row = returned_row
-            if message_row is None:
-                results = await resolved.db.execute(
-                    resolved.sql, resolved.params, truncate=True
-                )
-                message_row = results.first()
             self.ds.add_message(
                 request,
                 await _row_flash_message(
-                    resolved.db, "Updated", resolved, row=message_row
+                    self.ds,
+                    request,
+                    "Updated",
+                    resolved,
+                    row=returned_row,
+                    refresh_row=True,
                 ),
                 self.ds.INFO,
             )

@@ -29,7 +29,7 @@ from .utils import (
     table_columns,
 )
 from .utils.sql_analysis import SQLAnalysis, analyze_sql_tables
-from .utils.sqlite import sqlite_hidden_table_names
+from .utils.sqlite import sqlite_derived_table_dependencies, sqlite_hidden_table_names
 
 connections = threading.local()
 
@@ -85,6 +85,7 @@ class Database:
         self.cached_hash = None
         self.cached_size = None
         self._cached_table_counts = None
+        self._cached_derived_table_dependencies = None
         self._write_thread = None
         self._write_queue = None
         self._closed = False
@@ -246,16 +247,28 @@ class Database:
         return_all=False,
         returning_limit=EXECUTE_WRITE_RETURNING_LIMIT,
         transaction=True,
+        time_limit_ms=2000,
     ):
         self._check_not_closed()
         if returning_limit < 0:
             raise ValueError("returning_limit must be >= 0")
 
-        def _inner(conn):
+        def execute_sql(conn):
             cursor = conn.execute(sql, params or [])
             return ExecuteWriteResult.from_cursor(
                 cursor, return_all=return_all, returning_limit=returning_limit
             )
+
+        def _inner(conn):
+            try:
+                if time_limit_ms is None:
+                    return execute_sql(conn)
+                with sqlite_timelimit(conn, time_limit_ms):
+                    return execute_sql(conn)
+            except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+                if e.args == ("interrupted",):
+                    raise QueryInterrupted(e, sql, params)
+                raise
 
         with trace("sql", database=self.name, sql=sql.strip(), params=params):
             results = await self.execute_write_fn(
@@ -354,6 +367,15 @@ class Database:
                     result = fn(self._write_connection)
             else:
                 result = fn(self._write_connection)
+            if not block:
+                # There is no write thread here, so the write has already
+                # finished. Hand back the same (task_id, reply_future) shape
+                # _send_to_write_thread() returns, with the future already
+                # resolved, so the block=False path below is identical in
+                # both modes.
+                reply_future = asyncio.get_running_loop().create_future()
+                reply_future.set_result(result)
+                result = (uuid.uuid4(), reply_future)
         else:
             result = await self._send_to_write_thread(
                 fn, block=block, transaction=transaction
@@ -425,7 +447,7 @@ class Database:
             )
             self._write_thread.name = f"_execute_writes for database {self.name}"
             self._write_thread.start()
-        task_id = uuid.uuid5(uuid.NAMESPACE_DNS, "datasette.io")
+        task_id = uuid.uuid4()
         loop = asyncio.get_running_loop()
         reply_future = loop.create_future()
         self._write_queue.put(
@@ -758,6 +780,17 @@ class Database:
             ]
 
         return hidden_tables
+
+    async def derived_table_dependencies(self):
+        """Return implementation tables and the tables they derive from."""
+        schema_version = (await self.execute("PRAGMA schema_version")).first()[0]
+        if (
+            self._cached_derived_table_dependencies is None
+            or self._cached_derived_table_dependencies[0] != schema_version
+        ):
+            dependencies = await self.execute_fn(sqlite_derived_table_dependencies)
+            self._cached_derived_table_dependencies = (schema_version, dependencies)
+        return self._cached_derived_table_dependencies[1]
 
     async def view_names(self):
         results = await self.execute("select name from sqlite_master where type='view'")

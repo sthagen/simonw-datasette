@@ -1,6 +1,7 @@
 import re
 from urllib.parse import urlencode
 
+from datasette.database import QueryInterrupted
 from datasette.resources import DatabaseResource
 from datasette.utils import UNSTABLE_API_MESSAGE, sqlite3
 from datasette.utils.asgi import Response
@@ -384,7 +385,7 @@ class ExecuteWriteView(BaseView):
         try:
             execute_write_kwargs = {"request": request}
             cursor = await db.execute_write(sql, params, **execute_write_kwargs)
-        except sqlite3.DatabaseError as ex:
+        except (QueryInterrupted, sqlite3.DatabaseError) as ex:
             message = str(ex)
             if wants_json:
                 return _block_framing(Response.error([message], 400))

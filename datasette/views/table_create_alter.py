@@ -27,7 +27,15 @@ from datasette.utils import (
     table_column_details,
 )
 from datasette.utils.asgi import NotFound, PayloadTooLarge, Response
-from datasette.utils.sqlite import sqlite_hidden_table_names
+from datasette.utils.permissions import (
+    SKIP_PERMISSION_CHECKS,
+    gather_permission_sql_from_hooks,
+    resolve_permissions_with_candidates,
+)
+from datasette.utils.sqlite import (
+    check_structured_write_table,
+    sqlite_hidden_table_names,
+)
 
 from .base import BaseView
 
@@ -120,6 +128,30 @@ def _public_foreign_key_target(target):
         "fk_column": target["fk_column"],
         "type": target["type"],
     }
+
+
+async def _filter_visible_foreign_key_targets(datasette, actor, database_name, targets):
+    if not targets:
+        return []
+
+    permission_sqls = await gather_permission_sql_from_hooks(
+        datasette=datasette,
+        actor=actor,
+        action="view-table",
+    )
+    if permission_sqls is SKIP_PERMISSION_CHECKS:
+        return targets
+
+    candidate_tables = list(dict.fromkeys(target["fk_table"] for target in targets))
+    permission_rows = await resolve_permissions_with_candidates(
+        datasette.get_internal_database(),
+        actor,
+        permission_sqls,
+        [(database_name, table_name) for table_name in candidate_tables],
+        "view-table",
+    )
+    visible_tables = {row["child"] for row in permission_rows if bool(row["allow"])}
+    return [target for target in targets if target["fk_table"] in visible_tables]
 
 
 def _singular(name):
@@ -821,16 +853,18 @@ class TableCreateView(BaseView):
         ignore = create_request.ignore
         replace = create_request.replace
 
+        table_name = create_request.table
+        table_exists = await db.table_exists(table_name)
+        table_resource = TableResource(database=database_name, table=table_name)
+
         # Replacing rows requires update-row permission
         if replace and not await self.ds.allowed(
             action="update-row",
-            resource=DatabaseResource(database=database_name),
+            resource=table_resource,
             actor=request.actor,
         ):
             return Response.error(["Permission denied: need update-row"], 403)
 
-        table_name = create_request.table
-        table_exists = await db.table_exists(table_name)
         columns = create_request.columns
         rows = create_request.rows_list
 
@@ -838,7 +872,7 @@ class TableCreateView(BaseView):
             # Must have insert-row permission
             if not await self.ds.allowed(
                 action="insert-row",
-                resource=DatabaseResource(database=database_name),
+                resource=table_resource,
                 actor=request.actor,
             ):
                 return Response.error(["Permission denied: need insert-row"], 403)
@@ -857,7 +891,7 @@ class TableCreateView(BaseView):
                 if create_request.alter:
                     if not await self.ds.allowed(
                         action="alter-table",
-                        resource=DatabaseResource(database=database_name),
+                        resource=table_resource,
                         actor=request.actor,
                     ):
                         return Response.error(
@@ -893,6 +927,7 @@ class TableCreateView(BaseView):
             )
 
         def create_table(conn):
+            check_structured_write_table(conn, table_name, allow_missing=True)
             db_for_write = sqlite_utils.Database(conn)
             table = db_for_write[table_name]
             if rows:
@@ -1012,6 +1047,9 @@ class DatabaseForeignKeyTargetsView(BaseView):
             for target in (await db.execute(FOREIGN_KEY_TARGETS_SQL)).dicts()
             if target["fk_table"] not in hidden_tables
         ]
+        targets = await _filter_visible_foreign_key_targets(
+            self.ds, request.actor, database_name, targets
+        )
         return Response.json(
             {
                 "ok": True,
@@ -1050,6 +1088,15 @@ class TableForeignKeySuggestionsView(BaseView):
         source_columns, targets, current_by_column = await db.execute_fn(
             lambda conn: _foreign_key_suggestion_metadata(conn, table_name)
         )
+        targets = await _filter_visible_foreign_key_targets(
+            self.ds, request.actor, database_name, targets
+        )
+        visible_target_tables = {target["fk_table"] for target in targets}
+        current_by_column = {
+            column: current
+            for column, current in current_by_column.items()
+            if current["fk_table"] in visible_target_tables
+        }
 
         columns = []
         options_by_column = {}

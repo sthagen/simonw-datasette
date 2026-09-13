@@ -92,6 +92,13 @@ class ConfigPermissionProcessor:
             # Tables implicitly reference their parent databases
             self.restricted_databases.update(db for db, _ in self.restricted_tables)
 
+        # Resolve identity keys once per action, rather than scanning the
+        # restriction allowlist for every configured table's allow block.
+        self.restricted_table_keys = {
+            (db, self.action_obj.normalize_child(table) if self.action_obj else table)
+            for db, table in self.restricted_tables
+        }
+
     def evaluate_allow_block(self, allow_block: Any) -> bool | None:
         """Evaluate an allow block against the current actor."""
         if allow_block is None:
@@ -125,8 +132,10 @@ class ConfigPermissionProcessor:
         if parent:
             table_restrictions = (self.restrictions.get("r", {}) or {}).get(parent, {})
             if child:
-                table_actions = table_restrictions.get(child, [])
-                if self.action_checks.intersection(table_actions):
+                child_key = (
+                    self.action_obj.normalize_child(child) if self.action_obj else child
+                )
+                if (parent, child_key) in self.restricted_table_keys:
                     return True
             else:
                 # Parent query should proceed if any child in this database is allowlisted

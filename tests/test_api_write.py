@@ -69,6 +69,82 @@ BASE64_WRITE_API_LITERAL = '{"$base64": true, "encoded": "AAEC/f7/"}'
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("use_fallback", (False, True))
+@pytest.mark.parametrize(
+    "operation", ("insert", "upsert", "update", "delete", "create", "create_uppercase")
+)
+@pytest.mark.parametrize(
+    "module,definition,values,shadow_suffix",
+    (
+        ("fts5", "body", "'original'", "_content"),
+        ("fts4", "body", "'original'", "_content"),
+        ("rtree", "id, minx, maxx", "1, 0, 1", "_rowid"),
+    ),
+)
+@pytest.mark.parametrize("shadow", (False, True))
+async def test_structured_writes_require_ordinary_tables(
+    ds_write,
+    monkeypatch,
+    use_fallback,
+    operation,
+    module,
+    definition,
+    values,
+    shadow_suffix,
+    shadow,
+):
+    if use_fallback:
+        monkeypatch.setattr("datasette.utils.sqlite.supports_table_list", lambda: False)
+    db = ds_write.get_database("data")
+    await db.execute_write(f"create virtual table indexed using {module}({definition})")
+    await db.execute_write(f"insert into indexed values ({values})")
+    table = "indexed" + (shadow_suffix if shadow else "")
+    row = (await db.execute(f"select rowid, * from {escape_sqlite(table)}")).dicts()[0]
+    pks = await db.primary_keys(table)
+    pk_value = row[pks[0] if pks else "rowid"]
+    before = await db.execute_fn(lambda conn: list(conn.iterdump()))
+
+    if operation in ("create", "create_uppercase"):
+        path = "/data/-/create"
+        body = {
+            "table": table.upper() if operation == "create_uppercase" else table,
+            "rows": [row],
+        }
+    elif operation in ("update", "delete"):
+        path = f"/data/{table}/{pk_value}/-/{operation}"
+        body = {"update": row} if operation == "update" else {}
+    else:
+        path = f"/data/{table}/-/{operation}"
+        body = {"rows": [row]}
+    response = await ds_write.client.post(
+        path, json=body, headers=_headers(write_token(ds_write))
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["errors"] == ["Structured writes require an ordinary table"]
+    assert await db.execute_fn(lambda conn: list(conn.iterdump())) == before
+
+
+@pytest.mark.asyncio
+async def test_structured_writes_to_content_table_maintain_fts(ds_write):
+    db = ds_write.get_database("data")
+    await db.execute_write_fn(
+        lambda conn: sqlite_utils.Database(conn)["docs"].enable_fts(
+            ["title"], create_triggers=True
+        )
+    )
+    response = await ds_write.client.post(
+        "/data/docs/-/insert",
+        json={"row": {"id": 1, "title": "ordinary content"}},
+        headers=_headers(write_token(ds_write)),
+    )
+    assert response.status_code == 201, response.text
+    matches = await db.execute(
+        "select rowid from docs_fts where docs_fts match ?", ["ordinary"]
+    )
+    assert [row[0] for row in matches.rows] == [1]
+
+
+@pytest.mark.asyncio
 async def test_base64_write_api_create_table_infers_blob_and_raw_escapes(ds_write):
     token = write_token(ds_write)
     response = await ds_write.client.post(
@@ -1296,7 +1372,7 @@ async def test_alter_table_foreign_key_without_fk_column_requires_single_pk(ds_w
 
 @pytest.mark.asyncio
 async def test_foreign_key_suggestions(ds_write):
-    token = write_token(ds_write, permissions=["at"])
+    token = write_token(ds_write, permissions=["alter-table", "view-table"])
     db = ds_write.get_database("data")
     await db.execute_write("create table owners (id integer primary key)")
     await db.execute_write("insert into owners (id) values (1), (2), (3)")
@@ -1362,7 +1438,7 @@ async def test_foreign_key_suggestions_permission_denied(ds_write):
 
 @pytest.mark.asyncio
 async def test_foreign_key_suggestions_fail_open(ds_write, monkeypatch):
-    token = write_token(ds_write, permissions=["at"])
+    token = write_token(ds_write, permissions=["alter-table", "view-table"])
     db = ds_write.get_database("data")
     await db.execute_write("create table owners (id integer primary key)")
 
@@ -1393,7 +1469,7 @@ async def test_foreign_key_suggestions_fail_open(ds_write, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_foreign_key_targets(ds_write):
-    token = write_token(ds_write, permissions=["ct"])
+    token = write_token(ds_write, permissions=["create-table", "view-table"])
     db = ds_write.get_database("data")
     await db.execute_write("create table owners (id integer primary key)")
     await db.execute_write("create table categories (slug varchar(30) primary key)")
@@ -2745,3 +2821,119 @@ async def test_create_using_alter_against_existing_table(
         insert_rows_event = ds_write._tracked_events[1]
         assert insert_rows_event.name == "insert-rows"
         assert insert_rows_event.num_rows == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("denied_action", "request_body"),
+    (
+        (
+            "insert-row",
+            {
+                "table": "salaries",
+                "rows": [{"id": 9, "note": "INJ-VIA-CREATE"}],
+            },
+        ),
+        (
+            "update-row",
+            {
+                "table": "salaries",
+                "rows": [{"id": 1, "note": "REPLACED"}],
+                "pk": "id",
+                "replace": True,
+            },
+        ),
+        (
+            "alter-table",
+            {
+                "table": "salaries",
+                "rows": [{"id": 9, "note": "INSERTED", "extra": "NEW"}],
+                "alter": True,
+            },
+        ),
+    ),
+)
+async def test_create_table_existing_table_respects_table_level_denial(
+    denied_action, request_body
+):
+    # GHSA-53fc-rhfg-h7qp issue 2: POST /db/-/create against an existing table
+    # inserts rows into it, so insert-row (and update-row / alter-table) must be
+    # checked against the TableResource, not just the DatabaseResource.
+    ds = Datasette(
+        memory=True,
+        config={
+            "databases": {
+                # id=editor user has each permission at the database level, but
+                # the selected action is explicitly denied on the salaries table
+                "data": {
+                    "permissions": {
+                        "create-table": {"id": "editor"},
+                        "insert-row": {"id": "editor"},
+                        "update-row": {"id": "editor"},
+                        "alter-table": {"id": "editor"},
+                    },
+                    "tables": {
+                        "salaries": {"permissions": {denied_action: False}},
+                    },
+                }
+            }
+        },
+    )
+    db = ds.add_memory_database(
+        f"create_table_existing_table_denied_{denied_action}", name="data"
+    )
+    await db.execute_write("create table salaries (id integer primary key, note text)")
+    await db.execute_write("insert into salaries values (1, 'TOPSECRET-A')")
+    await ds.invoke_startup()
+
+    if denied_action == "insert-row":
+        # Sanity: direct insert into salaries is denied for this actor
+        direct = await ds.client.post(
+            "/data/salaries/-/insert",
+            actor={"id": "editor"},
+            json={"row": {"id": 9, "note": "INJ-DIRECT"}},
+        )
+        assert direct.status_code == 403
+
+    response = await ds.client.post(
+        "/data/-/create",
+        actor={"id": "editor"},
+        json=request_body,
+    )
+    assert response.status_code == 403, response.json()
+    assert response.json()["errors"] == [f"Permission denied: need {denied_action}"]
+    rows = (await db.execute("select id, note from salaries order by id")).rows
+    assert [tuple(r) for r in rows] == [(1, "TOPSECRET-A")]
+    assert await db.table_columns("salaries") == ["id", "note"]
+
+
+@pytest.mark.asyncio
+async def test_create_table_respects_predeclared_table_level_denial():
+    ds = Datasette(
+        memory=True,
+        config={
+            "databases": {
+                "data": {
+                    "permissions": {
+                        "create-table": {"id": "editor"},
+                        "insert-row": {"id": "editor"},
+                    },
+                    "tables": {
+                        "planned_table": {"permissions": {"insert-row": False}},
+                    },
+                }
+            }
+        },
+    )
+    db = ds.add_memory_database("create_table_predeclared_denial", name="data")
+    await ds.invoke_startup()
+
+    response = await ds.client.post(
+        "/data/-/create",
+        actor={"id": "editor"},
+        json={"table": "planned_table", "rows": [{"id": 1}]},
+    )
+
+    assert response.status_code == 403, response.json()
+    assert response.json()["errors"] == ["Permission denied: need insert-row"]
+    assert not await db.table_exists("planned_table")

@@ -36,8 +36,10 @@ def test_homepage(app_client_two_attached_databases):
     h2 = soup.select("h2")[0]
     assert "extra database" == h2.text.strip()
     counts_p, links_p = h2.find_all_next("p")[:2]
+    # Shadow tables of the external-content index are denied, so they do not
+    # contribute to the table or row totals.
     assert (
-        "2 rows in 1 table, 5 rows in 4 hidden tables, 1 view" == counts_p.text.strip()
+        "2 rows in 1 table, 2 rows in 1 hidden table, 1 view" == counts_p.text.strip()
     )
     # We should only show visible, not hidden tables here:
     table_links = [

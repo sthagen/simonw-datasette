@@ -1,4 +1,5 @@
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 from bs4 import BeautifulSoup as Soup
@@ -235,6 +236,35 @@ def test_auth_create_token(
         )
         assert response3.status == 200
         assert response3.json["actor"]["id"] == "test"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize(
+    "restrictions",
+    [
+        {},
+        {"a": ["vi"]},
+        {"d": {"db": ["vd"]}},
+        {"r": {"db": {"t1": ["vt"]}}},
+    ],
+    ids=["empty", "instance", "database", "table"],
+)
+async def test_auth_create_token_not_allowed_for_restricted_actors(
+    bare_ds, monkeypatch, method, restrictions
+):
+    create_token = AsyncMock()
+    monkeypatch.setattr(bare_ds, "create_token", create_token)
+
+    response = await bare_ds.client.request(
+        method,
+        "/-/create-token",
+        actor={"id": "test", "_r": restrictions},
+    )
+
+    assert response.status_code == 403
+    assert "Restricted actors cannot create API tokens" in response.text
+    create_token.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -524,3 +554,25 @@ async def test_root_without_root_enabled_no_special_permissions(ds_client):
         )
         is not True
     ), "Root without root_enabled should not automatically get set-column-type"
+
+
+@pytest.mark.parametrize("expire_after", (1, 300, 3600, 30 * 24 * 60 * 60))
+def test_set_actor_cookie_honours_expire_after(expire_after):
+    # GHSA-53fc-rhfg-h7qp issue 4: expire_after is documented as a number of
+    # seconds, but every value was being replaced with 24 hours.
+    from datasette.app import Datasette
+    from datasette.utils.asgi import Response
+
+    ds = Datasette(memory=True)
+    response = Response.text("")
+    before = int(time.time())
+    ds.set_actor_cookie(response, {"id": "test"}, expire_after=expire_after)
+    after = int(time.time())
+
+    (header,) = response._set_cookie_headers
+    assert header.startswith("ds_actor=")
+    value = header[len("ds_actor=") :].split(";", 1)[0]
+    data = ds.unsign(value, "actor")
+    assert data["a"] == {"id": "test"}
+    expires_at = baseconv.base62.decode(data["e"])
+    assert before + expire_after <= expires_at <= after + expire_after

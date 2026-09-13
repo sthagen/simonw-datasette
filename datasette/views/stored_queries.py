@@ -279,7 +279,7 @@ class QueryCreateView(BaseView):
             ),
         )
         response.status = status
-        return response
+        return _block_framing(response)
 
     async def get(self, request):
         db = await self.ds.resolve_database(request)
@@ -527,7 +527,7 @@ class QueryEditView(BaseView):
             ),
         )
         response.status = status
-        return response
+        return _block_framing(response)
 
     async def get(self, request):
         db, query_name, existing = await self._load(request)
@@ -639,15 +639,17 @@ class QueryDeleteView(BaseView):
             return Response.error(
                 ["Trusted queries cannot be deleted using the API"], 403
             )
-        return await self.render(
-            ["query_delete.html"],
-            request,
-            {
-                "database": db.name,
-                "database_color": db.color,
-                "query": stored_query_to_dict(existing),
-                "query_url": self.ds.urls.table(db.name, query_name),
-            },
+        return _block_framing(
+            await self.render(
+                ["query_delete.html"],
+                request,
+                {
+                    "database": db.name,
+                    "database_color": db.color,
+                    "query": stored_query_to_dict(existing),
+                    "query_url": self.ds.urls.table(db.name, query_name),
+                },
+            )
         )
 
     async def post(self, request):

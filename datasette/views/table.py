@@ -57,6 +57,7 @@ from datasette.utils.asgi import (
     Request,
     Response,
 )
+from datasette.utils.sqlite import check_structured_write_table
 
 from . import Context, from_extra
 from .base import BaseView, DatasetteError, stream_csv
@@ -1126,6 +1127,7 @@ class TableInsertView(BaseView):
             row_pk_values_for_later = [tuple(row[pk] for pk in pks) for row in rows]
 
         def insert_or_upsert_rows(conn):
+            check_structured_write_table(conn, table_name)
             table = sqlite_utils.Database(conn)[table_name]
             kwargs = {}
             if upsert:
@@ -1157,17 +1159,32 @@ class TableInsertView(BaseView):
             # TODO: narrow to expected write errors so Datasette bugs surface as 500s
             return Response.error([str(e)])
         result = {"ok": True}
+        # Only read back and disclose stored rows if the actor is also
+        # allowed to view this table - insert-row/update-row alone must
+        # not be usable to read data the actor cannot otherwise see.
+        if should_return and not await self.ds.allowed(
+            action="view-table",
+            resource=TableResource(database=database_name, table=table_name),
+            actor=request.actor,
+        ):
+            should_return = False
         if should_return:
             if upsert:
                 # Fetch based on initial input IDs
                 where_clause = " OR ".join(
-                    ["({})".format(" AND ".join(f"{pk} = ?" for pk in pks))]
+                    [
+                        "({})".format(
+                            " AND ".join(f"{escape_sqlite(pk)} = ?" for pk in pks)
+                        )
+                    ]
                     * len(row_pk_values_for_later)
                 )
                 args = list(itertools.chain.from_iterable(row_pk_values_for_later))
                 fetched_rows = await db.execute(
-                    "select {}* from [{}] where {}".format(
-                        "rowid, " if pks == ["rowid"] else "", table_name, where_clause
+                    "select {}* from {} where {}".format(
+                        "rowid, " if pks == ["rowid"] else "",
+                        escape_sqlite(table_name),
+                        where_clause,
                     ),
                     args,
                 )
@@ -1382,7 +1399,9 @@ class TableDropView(BaseView):
                     "database": database_name,
                     "table": table_name,
                     "row_count": (
-                        await db.execute(f"select count(*) from [{table_name}]")
+                        await db.execute(
+                            f"select count(*) from {escape_sqlite(table_name)}"
+                        )
                     ).single_value(),
                     "message": 'Pass "confirm": true to confirm',
                 },
@@ -1695,13 +1714,22 @@ async def table_view(datasette, request):
     if ttl is None or not ttl.isdigit():
         ttl = datasette.setting("default_cache_ttl")
 
+    private = getattr(request, "_datasette_private_response", False)
+
     if datasette.cache_headers and response.status == 200:
-        ttl = int(ttl)
-        if ttl == 0:
-            ttl_header = "no-cache"
+        if private:
+            # This response is only visible to the current actor (denied to
+            # anonymous requests), so it must never be stored by a shared
+            # cache/CDN - and ?_ttl= must not be able to override that.
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["Vary"] = "Cookie"
         else:
-            ttl_header = f"max-age={ttl}"
-        response.headers["Cache-Control"] = ttl_header
+            ttl = int(ttl)
+            if ttl == 0:
+                ttl_header = "no-cache"
+            else:
+                ttl_header = f"max-age={ttl}"
+            response.headers["Cache-Control"] = ttl_header
 
     # Referrer policy
     response.headers["Referrer-Policy"] = "no-referrer"
@@ -1949,6 +1977,10 @@ async def table_view_data(
     )
     if not visible:
         raise Forbidden("You do not have permission to view this table")
+    # Record whether this response is private (visible to this actor only)
+    # so the outer table_view() can set appropriate Cache-Control headers,
+    # regardless of which output format ends up being rendered.
+    request._datasette_private_response = private
 
     # Redirect based on request.args, if necessary
     redirect_response = await _redirect_if_needed(datasette, request, resolved)
@@ -2432,9 +2464,12 @@ async def _next_value_and_url(
             except IndexError:
                 # sort/sort_desc column missing from SELECT - look up value by PK instead
                 prefix_where_clause = " and ".join(
-                    f"[{pk}] = :pk{i}" for i, pk in enumerate(pks)
+                    f"{escape_sqlite(pk)} = :pk{i}" for i, pk in enumerate(pks)
                 )
-                prefix_lookup_sql = f"select [{sort or sort_desc}] from [{table_name}] where {prefix_where_clause}"
+                prefix_lookup_sql = (
+                    f"select {escape_sqlite(sort or sort_desc)} "
+                    f"from {escape_sqlite(table_name)} where {prefix_where_clause}"
+                )
                 prefix = (
                     await db.execute(
                         prefix_lookup_sql,

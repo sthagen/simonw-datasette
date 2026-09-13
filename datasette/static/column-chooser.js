@@ -472,10 +472,12 @@ class ColumnChooser extends HTMLElement {
           <span class="drag-item-check">
             <input type="checkbox" ${this._checked.has(col) ? "checked" : ""}>
           </span>
-          <span class="drag-item-label">${col}</span>
+          <span class="drag-item-label"></span>
         </label>
         <div class="drop-indicator"></div>
       `;
+
+      li.querySelector(".drag-item-label").textContent = col;
 
       li.querySelector("input").addEventListener("change", (e) => {
         e.target.checked ? this._checked.add(col) : this._checked.delete(col);

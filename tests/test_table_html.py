@@ -270,7 +270,8 @@ async def test_empty_search_parameter_gets_removed(ds_client):
 async def test_searchable_view_persists_fts_table(ds_client):
     # The search form should persist ?_fts_table as a hidden field
     response = await ds_client.get(
-        "/fixtures/searchable_view?_fts_table=searchable_fts&_fts_pk=pk"
+        "/fixtures/searchable_view_configured_by_metadata"
+        "?_fts_table=searchable_fts&_fts_pk=pk"
     )
     inputs = Soup(response.text, "html.parser").find("form").find_all("input")
     hiddens = [i for i in inputs if i["type"] == "hidden"]

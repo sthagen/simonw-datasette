@@ -1661,6 +1661,8 @@ The request body is always parsed as JSON, regardless of the request's ``Content
 
 The row-based write APIs can write :ref:`binary values in JSON <binary_json_format>` using Datasette's Base64 representation for BLOB data.
 
+Structured inserts, upserts, updates and deletes only support ordinary SQLite tables. Virtual tables and their internal shadow tables are rejected, including when adding rows to an existing table through the create-table API. Writes to ordinary content tables can still update full-text search indexes through configured triggers.
+
 .. _ExecuteWriteView:
 
 Executing write SQL

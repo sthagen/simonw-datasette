@@ -28,7 +28,7 @@ import urllib.parse
 from concurrent import futures
 from pathlib import Path
 
-import httpx
+import httpx2
 from itsdangerous import BadSignature, URLSafeSerializer
 from jinja2 import (
     ChoiceLoader,
@@ -315,7 +315,7 @@ def _permission_cache_key(actor, action, parent, child):
     actor_key = (
         json.dumps(actor, sort_keys=True, default=repr) if actor is not None else None
     )
-    return (actor_key, action, parent, child)
+    return (actor_key, action.name, parent, action.normalize_child(child))
 
 
 async def favicon(request, send):
@@ -1532,15 +1532,28 @@ class Datasette:
         conn.row_factory = sqlite3.Row
         conn.text_factory = lambda x: str(x, "utf-8", "replace")
         if self.sqlite_extensions and database != INTERNAL_DB_NAME:
+            # Extension loading is only enabled for as long as it takes to
+            # load the configured extensions. Leaving it enabled would let
+            # anyone who can execute SQL call load_extension() themselves.
             conn.enable_load_extension(True)
-            for extension in self.sqlite_extensions:
-                # "extension" is either a string path to the extension
-                # or a 2-item tuple that specifies which entrypoint to load.
-                if isinstance(extension, tuple):
-                    path, entrypoint = extension
-                    conn.execute("SELECT load_extension(?, ?)", [path, entrypoint])
-                else:
-                    conn.execute("SELECT load_extension(?)", [extension])
+            try:
+                for extension in self.sqlite_extensions:
+                    # "extension" is either a string path to the extension
+                    # or a 2-item tuple that specifies which entrypoint to load.
+                    if isinstance(extension, tuple):
+                        path, entrypoint = extension
+                        if sys.version_info >= (3, 12):
+                            conn.load_extension(path, entrypoint=entrypoint)
+                        else:
+                            # Connection.load_extension() only gained the
+                            # entrypoint argument in Python 3.12
+                            conn.execute(
+                                "SELECT load_extension(?, ?)", [path, entrypoint]
+                            )
+                    else:
+                        conn.load_extension(extension)
+            finally:
+                conn.enable_load_extension(False)
         if self.setting("cache_size_kb"):
             conn.execute(f"PRAGMA cache_size=-{self.setting('cache_size_kb')}")
         # pylint: disable=no-member
@@ -1733,7 +1746,144 @@ class Datasette:
         sql, params = await build_allowed_resources_sql(
             self, actor, action, parent=parent, include_is_private=include_is_private
         )
+        if action == "view-table":
+            sql, params = await self._apply_derived_table_permissions_to_sql(
+                sql,
+                params,
+                actor=actor,
+                parent=parent,
+                include_is_private=include_is_private,
+            )
         return ResourcesSQL(sql, params)
+
+    async def _allowed_derived_table_source(
+        self, database, source, *, actor, dependencies
+    ):
+        """Check an immediate source, denying sources that are themselves derived."""
+        if any(
+            TableResource.normalize_child(table)
+            == TableResource.normalize_child(source)
+            for table in dependencies
+        ):
+            return False
+        # The source has no dependency in this map. Evaluate its own permission
+        # and prerequisites without starting another dependency check.
+        verdicts = await self._allowed_many(
+            actions=["view-table"],
+            resource=TableResource(database, source),
+            actor=actor,
+            check_derived=False,
+        )
+        return verdicts["view-table"]
+
+    async def _apply_derived_table_permissions_to_sql(
+        self,
+        sql,
+        params,
+        *,
+        actor,
+        parent,
+        include_is_private,
+    ):
+        databases = (
+            [(parent, self.databases[parent])]
+            if parent in self.databases
+            else ([] if parent is not None else list(self.databases.items()))
+        )
+        dependency_maps = dict(
+            zip(
+                (name for name, _ in databases),
+                await asyncio.gather(
+                    *(db.derived_table_dependencies() for _, db in databases)
+                ),
+            )
+        )
+        dependencies = [
+            (database_name, child, source)
+            for database_name, dependency_map in dependency_maps.items()
+            for child, source in dependency_map.items()
+        ]
+        if not dependencies:
+            return sql, params
+
+        sources = sorted(
+            {(database_name, source) for database_name, _, source in dependencies}
+        )
+        actor_verdicts = await asyncio.gather(
+            *(
+                self._allowed_derived_table_source(
+                    database_name,
+                    source,
+                    actor=actor,
+                    dependencies=dependency_maps[database_name],
+                )
+                for database_name, source in sources
+            )
+        )
+        actor_allowed = dict(zip(sources, actor_verdicts))
+
+        anonymous_allowed = {}
+        if include_is_private:
+            anonymous_verdicts = await asyncio.gather(
+                *(
+                    self._allowed_derived_table_source(
+                        database_name,
+                        source,
+                        actor=None,
+                        dependencies=dependency_maps[database_name],
+                    )
+                    for database_name, source in sources
+                )
+            )
+            anonymous_allowed = dict(zip(sources, anonymous_verdicts))
+
+        wrapped_params = dict(params)
+        derived_rows = [
+            [
+                database_name,
+                child,
+                int(actor_allowed[(database_name, source)]),
+                *(
+                    [int(anonymous_allowed[(database_name, source)])]
+                    if include_is_private
+                    else []
+                ),
+            ]
+            for database_name, child, source in dependencies
+        ]
+        derived_param = "_datasette_derived_permissions"
+        while derived_param in wrapped_params:
+            derived_param += "_"
+        wrapped_params[derived_param] = json.dumps(derived_rows)
+
+        derived_columns = "parent, child, source_allowed"
+        select_columns = "allowed.parent, allowed.child, allowed.reason"
+        if include_is_private:
+            derived_columns += ", source_anonymous_allowed"
+            select_columns += (
+                ", CASE WHEN derived.source_anonymous_allowed = 0 "
+                "THEN 1 ELSE allowed.is_private END AS is_private"
+            )
+        wrapped_sql = f"""
+WITH derived_permissions({derived_columns}) AS (
+  SELECT
+    json_extract(value, '$[0]'),
+    json_extract(value, '$[1]'),
+    json_extract(value, '$[2]')
+    {", json_extract(value, '$[3]')" if include_is_private else ""}
+  FROM json_each(:{derived_param})
+),
+allowed AS (
+{sql}
+)
+SELECT {select_columns}
+FROM allowed
+LEFT JOIN derived_permissions AS derived
+  ON allowed.parent = derived.parent AND allowed.child = derived.child COLLATE NOCASE
+WHERE COALESCE(derived.source_allowed, 1) = 1
+ORDER BY allowed.parent, allowed.child
+""".strip()
+        return wrapped_sql, wrapped_params
 
     async def allowed_resources(
         self,
@@ -1937,6 +2087,12 @@ class Datasette:
             )
             # {"edit-schema": True, "drop-table": True, "insert-row": False}
         """
+        return await self._allowed_many(
+            actions=actions, resource=resource, actor=actor, check_derived=True
+        )
+
+    async def _allowed_many(self, *, actions, resource, actor, check_derived):
+        """Evaluate permissions, optionally applying the one-hop source policy."""
         from datasette.permissions import (
             _permission_check_cache,
             _skip_permission_checks,
@@ -1974,7 +2130,7 @@ class Datasette:
         to_check = []
         for name in expanded:
             if cache is not None:
-                key = _permission_cache_key(actor, name, parent, child)
+                key = _permission_cache_key(actor, self.actions[name], parent, child)
                 if key in cache:
                     final[name] = cache[key]
                     continue
@@ -1989,6 +2145,28 @@ class Datasette:
                 parent=parent,
                 child=child,
             )
+
+        if (
+            check_derived
+            and "view-table" in to_check
+            and raw.get("view-table")
+            and isinstance(resource, TableResource)
+            and parent in self.databases
+        ):
+            dependencies = await self.databases[parent].derived_table_dependencies()
+            source = next(
+                (
+                    source
+                    for table, source in dependencies.items()
+                    if TableResource.normalize_child(table)
+                    == TableResource.normalize_child(child)
+                ),
+                None,
+            )
+            if source is not None:
+                raw["view-table"] = await self._allowed_derived_table_source(
+                    parent, source, actor=actor, dependencies=dependencies
+                )
 
         def resolve(name):
             # final verdict = own rules AND verdict of also_requires chain
@@ -2007,7 +2185,9 @@ class Datasette:
         # Cache the freshly computed checks
         if cache is not None:
             for name in to_check:
-                cache[_permission_cache_key(actor, name, parent, child)] = final[name]
+                cache[
+                    _permission_cache_key(actor, self.actions[name], parent, child)
+                ] = final[name]
 
         # Log every check (including cache hits) for the debug page,
         # dependencies before the actions that required them
@@ -2449,7 +2629,7 @@ class Datasette:
     ):
         data = {"a": actor}
         if expire_after:
-            expires_at = int(time.time()) + (24 * 60 * 60)
+            expires_at = int(time.time()) + expire_after
             data["e"] = baseconv.base62.encode(expires_at)
         response.set_cookie("ds_actor", self.sign(data, "actor"))
 
@@ -2815,7 +2995,7 @@ class Datasette:
         This is the single entry point used by both AsgiLifespan (so
         real deployments finish startup before accepting requests) and
         AsgiRunOnFirstRequest (the fallback for hosts that never send
-        lifespan events, e.g. DatasetteClient's httpx.ASGITransport), and
+        lifespan events, e.g. DatasetteClient's httpx2.ASGITransport), and
         `datasette serve` (cli.py) calls it too. The fast path below checks
         both `_startup_invoked` and `_setup_db_done` - not just the former -
         so that a bare `await ds.invoke_startup()` made by a caller ahead of
@@ -2891,6 +3071,50 @@ class DatasetteRouter:
             receive,
             max_post_body_bytes=self.ds.setting("max_post_body_bytes"),
         )
+        match, view = resolve_routes(self.routes, path)
+        is_static = view is favicon or getattr(view, "_datasette_static", False)
+        original_send = send
+
+        async def send(message):
+            if message["type"] == "http.response.start" and not (
+                is_static and message["status"] in (200, 304)
+            ):
+                # Decide privacy after rendering, including for streaming responses
+                # and error handlers. A public primary resource can still include
+                # private labels, actor navigation, or cookie-dependent content.
+                headers = list(message.get("headers", []))
+                personalized = (
+                    request.actor is not None
+                    or "cookie" in request.headers
+                    or "authorization" in request.headers
+                    or any(key.lower() == b"set-cookie" for key, _ in headers)
+                )
+                if personalized:
+                    headers = [
+                        (key, value)
+                        for key, value in headers
+                        if key.lower() != b"cache-control"
+                    ]
+                    headers.append((b"cache-control", b"private, no-store"))
+
+                # Anonymous responses must not be reused for credentialed requests.
+                # Preserve any additional variation specified by views or plugins.
+                vary = [
+                    part.strip()
+                    for key, value in headers
+                    if key.lower() == b"vary"
+                    for part in value.split(b",")
+                    if part.strip()
+                ]
+                if b"*" not in vary:
+                    for name in (b"Cookie", b"Authorization"):
+                        if name.lower() not in {part.lower() for part in vary}:
+                            vary.append(name)
+                headers = [(k, v) for k, v in headers if k.lower() != b"vary"]
+                headers.append((b"vary", b", ".join(vary)))
+                message = dict(message, headers=headers)
+            await original_send(message)
+
         # Populate request_messages if ds_messages cookie is present
         try:
             request._messages = self.ds.unsign(
@@ -2930,8 +3154,7 @@ class DatasetteRouter:
             return await self.handle_401(request, send, token_error)
         scope_modifications["actor"] = actor or default_actor
         scope = dict(scope, **scope_modifications)
-
-        match, view = resolve_routes(self.routes, path)
+        request.scope = scope
 
         if match is None:
             return await self.handle_404(request, send)
@@ -3246,14 +3469,14 @@ class DatasetteClient:
         with _DatasetteClientContext():
             if skip_permission_checks:
                 with SkipPermissions():
-                    async with httpx.AsyncClient(
-                        transport=httpx.ASGITransport(app=self.app),
+                    async with httpx2.AsyncClient(
+                        transport=httpx2.ASGITransport(app=self.app),
                         cookies=kwargs.pop("cookies", None),
                     ) as client:
                         return await getattr(client, method)(self._fix(path), **kwargs)
             else:
-                async with httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=self.app),
+                async with httpx2.AsyncClient(
+                    transport=httpx2.ASGITransport(app=self.app),
                     cookies=kwargs.pop("cookies", None),
                 ) as client:
                     return await getattr(client, method)(self._fix(path), **kwargs)
@@ -3300,10 +3523,10 @@ class DatasetteClient:
             method: HTTP method (e.g., "GET", "POST", "PUT")
             path: The path to request
             skip_permission_checks: If True, bypass all permission checks for this request
-            **kwargs: Additional arguments to pass to httpx
+            **kwargs: Additional arguments to pass to httpx2
 
         Returns:
-            httpx.Response: The response from the request
+            httpx2.Response: The response from the request
         """
         from datasette.permissions import SkipPermissions
 
@@ -3312,16 +3535,16 @@ class DatasetteClient:
         with _DatasetteClientContext():
             if skip_permission_checks:
                 with SkipPermissions():
-                    async with httpx.AsyncClient(
-                        transport=httpx.ASGITransport(app=self.app),
+                    async with httpx2.AsyncClient(
+                        transport=httpx2.ASGITransport(app=self.app),
                         cookies=kwargs.pop("cookies", None),
                     ) as client:
                         return await client.request(
                             method, self._fix(path, avoid_path_rewrites), **kwargs
                         )
             else:
-                async with httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=self.app),
+                async with httpx2.AsyncClient(
+                    transport=httpx2.ASGITransport(app=self.app),
                     cookies=kwargs.pop("cookies", None),
                 ) as client:
                     return await client.request(

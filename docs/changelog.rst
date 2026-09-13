@@ -4,6 +4,55 @@
 Changelog
 =========
 
+.. _unreleased:
+
+Unreleased
+----------
+
+- Datasette now uses `httpx2 <https://httpx2.pydantic.dev/>`__, the Pydantic-maintained continuation of `httpx <https://www.python-httpx.org/>`__, in place of ``httpx``. The public API is the same, but responses returned by :ref:`internals_datasette_client` are now ``httpx2.Response`` objects rather than ``httpx.Response``. Plugins that use ``isinstance()`` checks against ``httpx.Response`` should be updated to use ``httpx2``. **Plugins that use httpx without explicitly depending on it** will need to add an explicit dependency or switch to `httpx2`.
+
+.. _v1_0_a39:
+
+1.0a39 (2026-09-10)
+-------------------
+
+This alpha release includes security fixes for permissions, SQL construction, HTML rendering, authentication and caching, plus improvements to application startup and write execution.
+
+See `0.65.4 <https://docs.datasette.io/en/stable/changelog.html#v0-65-4>`__ for fixes that have been backported to the stable 0.65.x branch.
+
+The Datasette blog `has more details on these releases <https://datasette.io/blog/2026/september-security-releases/>`__.
+
+Some of the security fixes include:
+
+- Table and view permission checks now take SQLite's case-insensitive names into account. See :ref:`authentication_permissions_explained`.
+- Viewing a full-text search index table now checks you have permission to view the table from which it draws its content.
+- Viewing SQLite statistics tables (``sqlite_stat1`` through ``sqlite_stat4``) is now denied by a default.
+- Table schema display now obeys the ``view-table`` permission.
+- Table filters using ``?_through=`` require permission to view the intermediate table.
+- Foreign-key target and suggestion APIs, incoming foreign-key relationships and their row counts now respect ``view-table`` permission.
+- Row endpoints check permissions before resolving primary keys, to avoid revealing the existence of an otherwise invisible primary key.
+- Improved permission checks for the create-table API. See :ref:`json_api_write`.
+- The write SQL interface now checks ``view-table`` permission for tables referenced by ``CREATE VIEW`` statements.
+- Fixed SQL identifier escaping for column names from untrusted database schemas.
+- Fixed HTML escaping for column names from untrusted database schemas.
+- URL columns now render links only for validated HTTP or HTTPS URLs.
+- Private and personalized dynamic responses now use ``Cache-Control: private, no-store``. Anonymous dynamic responses vary by ``Cookie`` and ``Authorization``.
+- Actor cookies now respect ``expire_after``.
+- Restricted actors can no longer create API tokens.
+- Stored-query create, edit and delete forms now block framing to prevent clickjacking.
+- Configuration secret redaction now matches key names case-insensitively.
+- SQLite extension loading is disabled after extensions supplied using ``--load-extension`` have been loaded.
+
+Other improvements and fixes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- :ref:`db.execute_write() <database_execute_write>` now has a default execution time limit of 2,000ms. Plugins can override this using ``time_limit_ms=`` or disable it using ``time_limit_ms=None``. This limit is independent of the ``sql_time_limit_ms`` setting for read queries.
+- Application startup now runs through ASGI lifespan events before requests are accepted, with a first-request fallback for hosts without lifespan support. Thanks, `Alex Garcia <https://github.com/asg017>`__. (:pr:`2887`)
+- ``datasette serve`` now runs startup hooks and Uvicorn on the same event loop, preserving background tasks started by plugins. The minimum Uvicorn version is now 0.29. Thanks, `Alex Garcia <https://github.com/asg017>`__. (:pr:`2886`)
+- Non-blocking writes using ``execute_write_fn(..., block=False)`` now return a distinct task UUID for every call and work correctly with ``num_sql_threads=0``. Thanks, `Zain Dana Harper <https://github.com/HarperZ9>`__. (:issue:`2860`, :issue:`2859`)
+- Dropping a table now disables its full-text search index first. (:issue:`2874`)
+- Fixed ``CREATE VIEW`` SQL analysis on Python 3.10.
+
 .. _v1_0_a38:
 
 1.0a38 (2026-08-06)

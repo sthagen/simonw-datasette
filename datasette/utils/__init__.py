@@ -820,7 +820,8 @@ def detect_spatialite(conn):
 
 def detect_fts(conn, table):
     """Detect if table has a corresponding FTS virtual table and return it"""
-    rows = conn.execute(detect_fts_sql(table)).fetchall()
+    sql, params = detect_fts_sql(table)
+    rows = conn.execute(sql, params).fetchall()
     if len(rows) == 0:
         return None
     else:
@@ -828,18 +829,26 @@ def detect_fts(conn, table):
 
 
 def detect_fts_sql(table):
-    return r"""
-        select name from sqlite_master
-            where rootpage = 0
-            and (
-                sql like '%VIRTUAL TABLE%USING FTS%content="{table}"%'
-                or sql like '%VIRTUAL TABLE%USING FTS%content=[{table}]%'
-                or (
-                    tbl_name = "{table}"
-                    and sql like '%VIRTUAL TABLE%USING FTS%'
+    escaped_table = table.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return (
+        r"""
+            select name from sqlite_master
+                where rootpage = 0
+                and (
+                    sql like :fts_double_quoted escape char(92)
+                    or sql like :fts_bracket_quoted escape char(92)
+                    or (
+                        tbl_name = :table
+                        and sql like '%VIRTUAL TABLE%USING FTS%'
+                    )
                 )
-            )
-    """.format(table=table.replace("'", "''"))
+        """,
+        {
+            "fts_double_quoted": f'%VIRTUAL TABLE%USING FTS%content="{escaped_table}"%',
+            "fts_bracket_quoted": f"%VIRTUAL TABLE%USING FTS%content=[{escaped_table}]%",
+            "table": table,
+        },
+    )
 
 
 def detect_json1(conn=None):
@@ -1557,7 +1566,13 @@ async def row_sql_params_pks(db, table, pk_values):
     if use_rowid:
         select = "rowid, *"
         pks = ["rowid"]
-    wheres = [f'"{pk}"=:p{i}' for i, pk in enumerate(pks)]
+    wheres = []
+    for i, pk in enumerate(pks):
+        escaped_pk = escape_sqlite(pk)
+        # Preserve the historic always-quoted SQL exposed by _extra=query
+        if escaped_pk == pk:
+            escaped_pk = f'"{pk}"'
+        wheres.append(f"{escaped_pk}=:p{i}")
     sql = f"select {select} from {escape_sqlite(table)} where {' AND '.join(wheres)}"
     params = {}
     for i, pk_value in enumerate(pk_values):
@@ -1729,7 +1744,7 @@ def redact_keys(original: dict, key_patterns: Iterable) -> dict:
             return {
                 k: (
                     redact(v)
-                    if not any(pattern in k for pattern in key_patterns)
+                    if not any(pattern in k.casefold() for pattern in key_patterns)
                     else "***"
                 )
                 for k, v in data.items()

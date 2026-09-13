@@ -3,6 +3,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
+_SQLITE_IDENTIFIER_CASE = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"
+)
+
 # Context variable to track when permission checks should be skipped
 _skip_permission_checks = contextvars.ContextVar(
     "skip_permission_checks", default=False
@@ -49,6 +53,15 @@ class Resource(ABC):
     # Class-level metadata (subclasses must define these)
     name: str = None  # e.g., "table", "database", "model"
     parent_class: type["Resource"] | None = None  # e.g., DatabaseResource for tables
+    case_insensitive_child: bool = False
+
+    @classmethod
+    def normalize_child(cls, child: str | None) -> str | None:
+        """Return a comparison key without changing the resource's display name."""
+        if cls.case_insensitive_child and child is not None:
+            # Match SQLite NOCASE: fold ASCII only, not Unicode lower/casefold.
+            return child.translate(_SQLITE_IDENTIFIER_CASE)
+        return child
 
     # Instance-level optional extra attributes
     reasons: list[str] | None = None
@@ -145,6 +158,11 @@ class Action:
     abbr: str | None = None
     resource_class: type[Resource] | None = None
     also_requires: str | None = None  # Optional action name that must also be allowed
+
+    def normalize_child(self, child: str | None) -> str | None:
+        if self.resource_class is None:
+            return child
+        return self.resource_class.normalize_child(child)
 
     @property
     def takes_parent(self) -> bool:

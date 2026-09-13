@@ -5,6 +5,7 @@ import pytest
 
 from datasette.app import Datasette
 from datasette.plugins import DEFAULT_PLUGINS
+from datasette.resources import DatabaseResource, TableResource
 from datasette.utils import UNSTABLE_API_MESSAGE, escape_sqlite, tilde_encode
 from datasette.utils.sqlite import sqlite_version
 from datasette.version import __version__
@@ -101,14 +102,11 @@ async def test_database_page(ds_client):
         "tags",
     }
 
-    # Expected hidden tables
+    # The external-content index is visible, but its shadow tables need a
+    # second dependency hop and are excluded by the one-hop permission policy.
     expected_hidden_tables = {
         "no_primary_key",
         "searchable_fts",
-        "searchable_fts_config",
-        "searchable_fts_data",
-        "searchable_fts_docsize",
-        "searchable_fts_idx",
     }
 
     # Verify all expected tables exist
@@ -456,6 +454,67 @@ async def test_row_foreign_key_tables(ds_client):
             "link": "/fixtures/foreign_key_references?foreign_key_with_label=1",
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_row_foreign_key_tables_omit_denied_tables(request):
+    actor = {"id": "reader"}
+    ds = Datasette(
+        memory=True,
+        default_deny=True,
+        config={
+            "databases": {
+                "data": {
+                    "tables": {
+                        "parents": {"permissions": {"view-table": True}},
+                        "private_children": {"permissions": {"view-table": False}},
+                    }
+                }
+            }
+        },
+    )
+    request.addfinalizer(ds.close)
+    db = ds.add_memory_database("fk_count_leak", name="data")
+    await db.execute_write("create table parents (id integer primary key, name text)")
+    await db.execute_write("""
+        create table private_children (
+            id integer primary key,
+            parent_id integer references parents(id)
+        )
+    """)
+    await db.execute_write("insert into parents values (1, 'Public parent')")
+    await db.execute_write("""
+        insert into private_children (id, parent_id) values
+            (1, 1),
+            (2, 1),
+            (3, 1)
+    """)
+    await ds.invoke_startup()
+
+    parent = TableResource(database="data", table="parents")
+    private_children = TableResource(database="data", table="private_children")
+    assert await ds.allowed(action="view-table", resource=parent, actor=actor)
+    assert not await ds.allowed(
+        action="view-table", resource=private_children, actor=actor
+    )
+    assert not await ds.allowed(
+        action="execute-sql",
+        resource=DatabaseResource(database="data"),
+        actor=actor,
+    )
+
+    direct_child = await ds.client.get("/data/private_children.json", actor=actor)
+    assert direct_child.status_code == 403
+    parent_response = await ds.client.get(
+        "/data/parents/1.json?_extra=foreign_key_tables", actor=actor
+    )
+    assert parent_response.status_code == 200
+
+    foreign_key_tables = parent_response.json().get("foreign_key_tables", [])
+    assert foreign_key_tables == [], (
+        "denied child table name, foreign-key column, and row count disclosed: "
+        f"{foreign_key_tables}"
+    )
 
 
 @pytest.mark.asyncio
@@ -894,10 +953,7 @@ async def test_hidden_sqlite_stat1_table():
     await db.execute_write("analyze")
     data = (await ds.client.get("/db.json?_show_hidden=1")).json()
     tables = [(t["name"], t["hidden"]) for t in data["tables"]]
-    assert tables in (
-        [("normal", False), ("sqlite_stat1", True)],
-        [("normal", False), ("sqlite_stat1", True), ("sqlite_stat4", True)],
-    )
+    assert tables == [("normal", False)]
 
 
 @pytest.mark.asyncio

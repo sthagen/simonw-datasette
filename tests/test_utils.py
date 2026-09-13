@@ -16,6 +16,7 @@ from datasette.app import Datasette
 from datasette.utils.asgi import Request
 from datasette.utils.sqlite import (
     sqlite3,
+    sqlite_derived_table_dependencies,
     sqlite_hidden_table_names,
     sqlite_table_type,
     supports_returning,
@@ -365,6 +366,46 @@ def test_sqlite_hidden_table_names_hides_multiline_content_fts_table():
         """)
 
         assert "searchable_fts" in sqlite_hidden_table_names(conn)
+    finally:
+        conn.close()
+
+
+def test_sqlite_derived_table_dependencies():
+    conn = utils.sqlite3.connect(":memory:")
+    try:
+        conn.executescript("""
+            create table docs(id integer primary key, body text);
+            create virtual table external_fts5 using fts5(
+                body, content='docs', content_rowid='id'
+            );
+            create virtual table internal_fts5 using fts5(body);
+            create virtual table contentless_fts5 using fts5(body, content='');
+            create virtual table external_fts4 using fts4(body, content="docs");
+            create virtual table internal_fts4 using fts4(body);
+            create virtual table contentless_fts4 using fts4(body, content="");
+            create table [docs, archive](body text);
+            create virtual table commented_fts5 using fts5(
+                body, tokenize='porter unicode61',
+                /* Comments and commas in quoted values must not confuse parsing. */
+                content='docs, archive'
+            );
+            create virtual table boxes using rtree(id, minx, maxx, miny, maxy);
+        """)
+
+        dependencies = sqlite_derived_table_dependencies(conn)
+
+        assert dependencies["external_fts5"] == "docs"
+        assert dependencies["external_fts4"] == "docs"
+        assert dependencies["commented_fts5"] == "docs, archive"
+        assert "contentless_fts5" not in dependencies
+        assert "contentless_fts4" not in dependencies
+        assert dependencies["internal_fts5_content"] == "internal_fts5"
+        assert dependencies["internal_fts4_content"] == "internal_fts4"
+        assert dependencies["external_fts5_data"] == "external_fts5"
+        assert dependencies["external_fts4_segments"] == "external_fts4"
+        assert dependencies["boxes_node"] == "boxes"
+        assert dependencies["boxes_parent"] == "boxes"
+        assert dependencies["boxes_rowid"] == "boxes"
     finally:
         conn.close()
 

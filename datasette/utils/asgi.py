@@ -498,6 +498,8 @@ def asgi_static(root_path, chunk_size=4096, headers=None, content_type=None):
             await asgi_send_html(send, "404: File not found", 404)
             return
 
+    # Only the actual static-file handler can bypass dynamic response privacy.
+    inner_static._datasette_static = True
     return inner_static
 
 

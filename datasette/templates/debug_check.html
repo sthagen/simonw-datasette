@@ -3,7 +3,6 @@
 {% block title %}Explain a permission decision{% endblock %}
 
 {% block extra_head %}
-<script src="{{ static('json-format-highlight-1.0.1.js') }}"></script>
 {% include "_permission_ui_styles.html" %}
 {% include "_debug_common_functions.html" %}
 <style>
@@ -238,7 +237,7 @@ function displayResult(data) {
     displayRules(data.explanation);
     displayRestrictions(data.explanation.restrictions);
     displayRequirements(data.explanation.required_actions);
-    document.getElementById('raw-json').innerHTML = jsonFormatHighlight(data);
+    document.getElementById('raw-json').textContent = JSON.stringify(data, null, 2);
 }
 
 function displayRules(explanation) {
@@ -298,7 +297,7 @@ function displayError(data) {
     document.getElementById('matching-rules').innerHTML = '';
     document.getElementById('restrictions-section').style.display = 'none';
     document.getElementById('requirements-section').style.display = 'none';
-    document.getElementById('raw-json').innerHTML = jsonFormatHighlight(data);
+    document.getElementById('raw-json').textContent = JSON.stringify(data, null, 2);
 }
 
 form.addEventListener('submit', event => {

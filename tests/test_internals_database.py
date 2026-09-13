@@ -15,11 +15,16 @@ from datasette.database import (
     DatasetteClosedError,
     ExecuteWriteResult,
     MultipleValues,
+    QueryInterrupted,
     Results,
     _deliver_write_result,
 )
 from datasette.utils import Column
-from datasette.utils.sqlite import sqlite3, supports_returning
+from datasette.utils.sqlite import (
+    sqlite3,
+    sqlite_derived_table_dependencies,
+    supports_returning,
+)
 
 requires_sqlite_returning = pytest.mark.skipif(
     not supports_returning(), reason="SQLite does not support RETURNING"
@@ -36,6 +41,31 @@ async def test_execute(db):
     results = await db.execute("select * from facetable")
     assert isinstance(results, Results)
     assert 15 == len(results)
+
+
+@pytest.mark.asyncio
+async def test_derived_dependency_cache_survives_failed_refresh(monkeypatch):
+    ds = Datasette(memory=True)
+    db = ds.add_memory_database(uuid.uuid4().hex, name="data")
+    await db.derived_table_dependencies()
+    previous_cache = db._cached_derived_table_dependencies
+    await db.execute_write("create table dependency_cache_refresh (id integer)")
+
+    class UnavailableSchema:
+        def execute(self, sql):
+            raise sqlite3.DatabaseError("schema temporarily unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "datasette.database.sqlite_derived_table_dependencies",
+            lambda conn: sqlite_derived_table_dependencies(UnavailableSchema()),
+        )
+        with pytest.raises(sqlite3.DatabaseError, match="schema temporarily"):
+            await db.derived_table_dependencies()
+    assert db._cached_derived_table_dependencies == previous_cache
+
+    await db.derived_table_dependencies()
+    assert db._cached_derived_table_dependencies[0] != previous_cache[0]
 
 
 @pytest.mark.asyncio
@@ -479,6 +509,31 @@ async def test_view_names(db):
 
 
 @pytest.mark.asyncio
+async def test_execute_write_custom_time_limit():
+    ds = Datasette(settings={"sql_time_limit_ms": 1})
+    db = ds.add_memory_database(uuid.uuid4().hex, name="write_limits")
+    await ds.invoke_startup()
+    # Bounded work from PR #51; even without a limit this finishes on its own.
+    sql = (
+        "with recursive c(x) as "
+        "(select 1 union all select x+1 from c where x < 800000) "
+        "select x from c where x < 0"
+    )
+    try:
+        await db.execute_write("create table items(value integer)")
+        with pytest.raises(QueryInterrupted):
+            await db.execute(sql)
+        # Writes take their own explicit limit, independent of the read setting.
+        with pytest.raises(QueryInterrupted):
+            await db.execute_write(f"insert into items(value) {sql}", time_limit_ms=1)
+        # Interruption must leave the connection available for subsequent writes.
+        await db.execute_write("insert into items(value) values (1)")
+        assert (await db.execute("select value from items")).single_value() == 1
+    finally:
+        ds.close()
+
+
+@pytest.mark.asyncio
 async def test_execute_write_block_true(db):
     result = await db.execute_write(
         "update roadside_attractions set name = ? where pk = ?", ["Mystery!", 1]
@@ -703,6 +758,33 @@ async def test_execute_write_fn_block_false(db):
 
     task_id = await db.execute_write_fn(write_fn, block=False)
     assert isinstance(task_id, uuid.UUID)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disable_threads", (False, True))
+async def test_execute_write_fn_block_false_returns_uuid(tmp_path, disable_threads):
+    # block=False is documented to return "a UUID representing the queued task".
+    # With num_sql_threads=0 there is no write thread, so the non-threaded branch
+    # has to satisfy the same contract as the threaded one.
+    settings = {"num_sql_threads": 0} if disable_threads else {}
+    ds = Datasette([], memory=True, settings=settings)
+    await ds.invoke_startup()
+    db = ds.add_memory_database("test_block_false")
+    await db.execute_write(
+        "create table if not exists t (id integer primary key, v text)"
+    )
+
+    def write_fn(conn):
+        conn.execute("insert into t (v) values ('a')")
+        # Returns None, like most write functions.
+
+    task_id = await db.execute_write_fn(write_fn, block=False)
+
+    assert isinstance(task_id, uuid.UUID)
+    # Distinct per call, so a caller can tell two queued tasks apart.
+    second = await db.execute_write_fn(write_fn, block=False)
+    assert isinstance(second, uuid.UUID)
+    assert second != task_id
 
 
 @pytest.mark.asyncio

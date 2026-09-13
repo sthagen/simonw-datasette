@@ -185,11 +185,15 @@ def restrictions_allow_action(
     # Check table/resource level
     if resource is not None and not isinstance(resource, str) and len(resource) == 2:
         database, table = resource
-        table_allowed = restrictions.get("r", {}).get(database, {}).get(table)
-        if table_allowed is not None:
-            assert isinstance(table_allowed, list)
-            if to_check.intersection(table_allowed):
-                return True
+        action_obj = datasette.actions.get(action)
+        normalize = action_obj.normalize_child if action_obj else lambda name: name
+        for table_name, table_allowed in (
+            restrictions.get("r", {}).get(database, {}).items()
+        ):
+            if normalize(table_name) == normalize(table):
+                assert isinstance(table_allowed, list)
+                if to_check.intersection(table_allowed):
+                    return True
 
     # This action is not explicitly allowed, so reject it
     return False
