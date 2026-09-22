@@ -1,5 +1,6 @@
 import pathlib
 import urllib.parse
+from types import SimpleNamespace
 
 import pytest
 from bs4 import BeautifulSoup as Soup
@@ -70,6 +71,21 @@ DEFAULT_EXPRESSION_OPTIONS = [
         "sqliteType": "integer",
     },
 ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("table", ("simple_primary_key", "simple_view"))
+@pytest.mark.parametrize("duration", (0.125, 0.25))
+async def test_table_footer_query_ms(ds_client, monkeypatch, table, duration):
+    times = iter((10.0, 10.0 + duration))
+    # Only mock the table view's clock, leaving SQL time limits unaffected.
+    monkeypatch.setattr(
+        "datasette.views.table.time", SimpleNamespace(perf_counter=lambda: next(times))
+    )
+    response = await ds_client.get(f"/fixtures/{table}")
+    assert response.status_code == 200
+    footer = Soup(response.text, "html.parser").find("footer")
+    assert f"Queries took {duration * 1000}ms" in footer.get_text()
 
 
 @pytest.mark.asyncio
@@ -482,6 +498,31 @@ async def test_facet_display(ds_client):
             ],
         },
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filters", ["state=CA", "state__exact=CA", "state=CA&state__exact=CA"]
+)
+async def test_facet_remove_exact_filter(ds_client, filters):
+    response = await ds_client.get(
+        f"/fixtures/facetable?_facet=state&{filters}&on_earth=1"
+    )
+    assert response.status_code == 200
+    soup = Soup(response.text, "html.parser")
+    remove_link = soup.select_one('.facet-info[data-column="state"] li a.cross')
+    assert remove_link is not None
+    url = urllib.parse.urlsplit(remove_link["href"])
+    assert urllib.parse.parse_qsl(url.query) == [
+        ("_facet", "state"),
+        ("on_earth", "1"),
+    ]
+    unfiltered = await ds_client.get(f"{url.path}.json?{url.query}")
+    assert unfiltered.status_code == 200
+    rows = unfiltered.json()["rows"]
+    assert len(rows) == 14
+    assert all(row["on_earth"] == 1 for row in rows)
+    assert {row["state"] for row in rows} == {"CA", "MI"}
 
 
 @pytest.mark.asyncio

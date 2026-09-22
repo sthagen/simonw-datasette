@@ -10,6 +10,11 @@ def startup(datasette):
 
 
 @hookspec
+def shutdown(datasette):
+    """Called once when the Datasette server is shutting down"""
+
+
+@hookspec
 def asgi_wrapper(datasette):
     """Returns an ASGI middleware callable to wrap our ASGI application with"""
 
@@ -45,7 +50,7 @@ def extra_body_script(
 def extra_template_vars(
     template, database, table, columns, view_name, request, datasette
 ):
-    """Extra template variables to be made available to the template - can return dict or callable or awaitable"""
+    """Extra template variables to be made available to the template - can return dict, None, callable or awaitable"""
 
 
 @hookspec

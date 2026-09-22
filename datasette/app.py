@@ -42,6 +42,7 @@ from jinja2.exceptions import TemplateNotFound
 from markupsafe import Markup, escape
 
 from . import stored_queries, write_sql
+from .background_tasks import BackgroundTask, BackgroundTaskSupervisor
 from .column_types import SQLiteType
 from .csrf import CrossOriginProtectionMiddleware
 from .database import Database, QueryInterrupted
@@ -145,6 +146,7 @@ from .views.stored_queries import (
 )
 from .views.table import (
     TableAutocompleteView,
+    TableCountView,
     TableDropView,
     TableFragmentView,
     TableInsertView,
@@ -422,6 +424,7 @@ class Datasette:
         default_deny=False,
     ):
         self._startup_invoked = False
+        self._shutdown_invoked = False
         self._closed = False
         assert config_dir is None or isinstance(
             config_dir, Path
@@ -454,6 +457,7 @@ class Datasette:
         self.actions = {}  # .invoke_startup() will populate this
         self._column_types = {}  # .invoke_startup() will populate this
         self._setup_db_done = False
+        self._suppress_background_tasks = False
         try:
             self._refresh_schemas_lock = asyncio.Lock()
             self._startup_lock = asyncio.Lock()
@@ -467,6 +471,7 @@ class Datasette:
                 self._startup_lock = asyncio.Lock()
             else:
                 raise
+        self._background_tasks = BackgroundTaskSupervisor(self)
         self.crossdb = crossdb
         self.nolock = nolock
         if memory or crossdb or not self.files:
@@ -2461,6 +2466,21 @@ ORDER BY allowed.parent, allowed.child
         )
         return d
 
+    def _tasks(self):
+        return {
+            "tasks": [
+                {
+                    "name": t.name,
+                    "state": t.state,
+                    "function": t.function,
+                    "started_at": t.started_at,
+                    "exception": repr(t.exception) if t.exception else None,
+                }
+                for t in self._background_tasks.tasks()
+            ],
+            "launched": self._background_tasks.launched,
+        }
+
     def _actor(self, request):
         return {"actor": request.actor}
 
@@ -2567,6 +2587,8 @@ ORDER BY allowed.parent, allowed.child
             datasette=self,
         ):
             extra_vars = await await_me_maybe(extra_vars)
+            if extra_vars is None:
+                continue
             assert isinstance(
                 extra_vars, dict
             ), f"extra_vars is of type {type(extra_vars)}"
@@ -2751,6 +2773,12 @@ ORDER BY allowed.parent, allowed.child
         )
         add_route(
             JsonDataView.as_view(
+                self, "tasks.json", self._tasks, permission="permissions-debug"
+            ),
+            r"/-/tasks(\.(?P<format>json))?$",
+        )
+        add_route(
+            JsonDataView.as_view(
                 self,
                 "databases.json",
                 self._databases_data,
@@ -2924,6 +2952,10 @@ ORDER BY allowed.parent, allowed.child
             r"/(?P<database>[^\/\.]+)/(?P<table>[^\/\.]+)/-/set-column-type$",
         )
         add_route(
+            TableCountView.as_view(self),
+            r"/(?P<database>[^\/\.]+)/(?P<table>[^\/\.]+)/-/count$",
+        )
+        add_route(
             TableFragmentView.as_view(self),
             r"/(?P<database>[^\/\.]+)/(?P<table>[^\/\.]+)/-/fragment$",
         )
@@ -3016,24 +3048,97 @@ ORDER BY allowed.parent, allowed.child
                 self._setup_db_done = True
             await self.invoke_startup()
 
+    def add_background_task(self, func, name=None) -> BackgroundTask:
+        """Register a piece of supervised background work, typically from
+        a plugin's ``startup`` hook.
+
+        ``func`` must be a coroutine function taking one positional
+        argument, the ``Datasette`` instance - core calls ``func(self)``.
+        Callable any time after ``__init__``: if background tasks haven't
+        launched yet (the common case - most callers are ``startup`` hooks,
+        which run before launch), this buffers the registration until they
+        do; if they've already launched (e.g. called from a request
+        handler after the server is up), the task starts immediately.
+
+        Returns a :class:`~datasette.background_tasks.BackgroundTask`
+        handle (``.name``, ``.state``, ``.task``, ``.exception``,
+        ``.started_at``, ``.function``, ``.cancel()``).
+
+        ``name`` defaults to ``func.__qualname__``; on a name collision a
+        ``-2``, ``-3``, ... suffix is appended, since names are how
+        ``/-/tasks`` and log messages identify work.
+        """
+        return self._background_tasks.add(func, name=name)
+
+    async def start_background_tasks(self):
+        """Run startup (if it hasn't run yet) and launch every registered
+        background task.
+
+        Public entry point for tests, embedders, and headless CLIs (the
+        ``datasette-rss``-style ``fetch --due`` shape) that want supervised
+        background tasks without running a server - equivalent to what
+        happens automatically via ASGI lifespan / the first-request
+        fallback in a served deployment.
+        """
+        await self.invoke_startup()
+        await self._background_tasks.launch_all()
+
+    async def _launch_background_tasks(self):
+        """Idempotently launch every registered background task. Private:
+        this is the entry point wired into the lifecycle trigger lists
+        (the second entry in both ``AsgiLifespan`` and
+        ``AsgiRunOnFirstRequest``'s ``on_startup``, after
+        ``_startup_sequence``) - not something plugins or embedders should
+        call directly; use ``add_background_task`` /
+        ``start_background_tasks`` instead.
+
+        Positioned after ``_startup_sequence`` in both trigger lists so
+        launch always happens once every plugin's ``startup`` hook has had
+        a chance to register work - the ordering guarantee that makes
+        ``add_background_task`` useful. No-ops when
+        ``_suppress_background_tasks`` is set (the ``--get`` CLI path: its
+        one-shot TestClient request flows through the full ASGI stack,
+        including the first-request fallback, but must never launch
+        long-lived background work).
+        """
+        if self._suppress_background_tasks:
+            return
+        await self._background_tasks.launch_all()
+
+    async def invoke_shutdown(self):
+        """Run the graceful teardown sequence: plugin ``shutdown`` hooks,
+        then cancel and drain supervised background tasks, then close
+        every database.
+        """
+        if self._shutdown_invoked:
+            return
+        self._shutdown_invoked = True
+        for hook in pm.hook.shutdown(datasette=self):
+            try:
+                await await_me_maybe(hook)
+            except Exception:
+                logging.getLogger("datasette").exception("shutdown hook failed")
+        await self._background_tasks.cancel_all(grace=5.0)
+        self.close()
+
     def app(self):
         """Returns an ASGI app function that serves the whole of Datasette"""
         routes = self._routes()
-
-        async def _close_on_shutdown():
-            self.close()
 
         asgi = CrossOriginProtectionMiddleware(DatasetteRouter(self, routes), self)
         if self.setting("trace_debug"):
             asgi = AsgiTracer(asgi)
         asgi = AsgiLifespan(
             asgi,
-            on_startup=[self._startup_sequence],
-            on_shutdown=[_close_on_shutdown],
+            on_startup=[self._startup_sequence, self._launch_background_tasks],
+            on_shutdown=[self.invoke_shutdown],
         )
-        asgi = AsgiRunOnFirstRequest(asgi, on_startup=[self._startup_sequence])
         for wrapper in pm.hook.asgi_wrapper(datasette=self):
             asgi = wrapper(asgi)
+        asgi = AsgiRunOnFirstRequest(
+            asgi,
+            on_startup=[self._startup_sequence, self._launch_background_tasks],
+        )
         return asgi
 
 

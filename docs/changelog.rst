@@ -4,12 +4,46 @@
 Changelog
 =========
 
-.. _unreleased:
+.. _v1_0_a40:
 
-Unreleased
-----------
+1.0a40 (2026-09-16)
+-------------------
 
+A security fix, a new set of APIs providing background tasks for plugins, an endpoint for counting matching rows, and a collection of bug fixes.
+
+Security fix
+~~~~~~~~~~~~
+
+- Fixed a security issue where a trailing newline in a requested table name could bypass table permissions and expose private rows. Thanks for the report, `dpfkdlemtp <https://github.com/dpfkdlemtp>`__. `GHSA-h547-rmjf-5m2m <https://github.com/simonw/datasette/security/advisories/GHSA-h547-rmjf-5m2m>`__
+
+Background tasks
+~~~~~~~~~~~~~~~~
+
+Datasette plugins can now use **background tasks** to run code independent of the Datasette request/response cycle.
+
+- New :ref:`datasette_add_background_task` API: plugins register supervised, long-lived background work - typically from a ``startup`` hook - and these will be launched after every ``startup`` hook has run. Tasks are cancelled (with a five-second grace period) on shutdown.
+- New ``/-/tasks`` JSON debug endpoint lists every supervised background task and its state, in the style of ``/-/threads``. See :ref:`JsonDataView_tasks`. It requires the ``permissions-debug`` permission.
+- New :ref:`plugin_hook_shutdown` plugin hook, called during graceful shutdown (Ctrl-C, ``SIGTERM``) before background tasks are cancelled and before database connections are closed. It is not called on a hard kill (``SIGKILL``).
+- Plugin ``asgi_wrapper`` middleware now always runs *after* startup has completed.
+- If your plugin uses ``asgi_wrapper`` to start background tasks on the first incoming request, you should migrate to ``datasette.add_background_task()`` instead. `datasette-cron <https://datasette.io/plugins/datasette-cron>`__ and `datasette-enrichments <https://datasette.io/plugins/datasette-enrichments>`__ are being migrated to this pattern.
+
+Other features
+~~~~~~~~~~~~~~
+
+- New :ref:`POST count endpoint <TableCountView>` for counting filtered table rows, now used by the **count all** button. (:issue:`2914`)
 - Datasette now uses `httpx2 <https://httpx2.pydantic.dev/>`__, the Pydantic-maintained continuation of `httpx <https://www.python-httpx.org/>`__, in place of ``httpx``. The public API is the same, but responses returned by :ref:`internals_datasette_client` are now ``httpx2.Response`` objects rather than ``httpx.Response``. Plugins that use ``isinstance()`` checks against ``httpx.Response`` should be updated to use ``httpx2``. **Plugins that use httpx without explicitly depending on it** will need to add an explicit dependency or switch to `httpx2`.
+
+Bug fixes
+~~~~~~~~~
+
+- Column facets now show the remove-filter link for filters using ``column__exact=value``, as well as ``column=value``. (:issue:`1695`)
+- The :ref:`alter-table API <TableAlterView>` now rolls back schema changes when a :ref:`write_wrapper <plugin_hook_write_wrapper>` raises after the write. (:issue:`2924`, :pr:`2925`)
+- The :ref:`extra_template_vars() <plugin_hook_extra_template_vars>` plugin hook can now return a function or awaitable that resolves to ``None`` when no extra variables are needed. (:issue:`2005`)
+- :ref:`request.headers <internals_request>` now supports case-insensitive header lookups, so ``request.headers.get("Content-Type")`` works as well as ``request.headers.get("content-type")``. (:issue:`1861`)
+- CSV endpoints now return plain-text error messages for SQL errors. (:issue:`2129`)
+- The :ref:`render_cell() <plugin_hook_render_cell>` plugin hook now receives an empty ``pks`` list when rendering SQL views in HTML, matching the JSON ``?_extra=render_cell`` behavior. (:issue:`2639`)
+- Numeric comparison filters now correctly handle decimal values, negative numbers and scientific notation when filtering computed columns and SQL views. Thanks, `Rami Abdelrazzaq <https://github.com/RamiNoodle733>`__. (:issue:`1681`, :pr:`2876`)
+- Fixed CSV streaming with ``?_stream=on`` on SQL views repeating the second page of results until the CSV size limit was reached. Thanks, `Ankita Advitot <https://github.com/AnkitaAdvitot>`__. (:issue:`2902`, :pr:`2903`)
 
 .. _v1_0_a39:
 
@@ -1141,7 +1175,7 @@ Features
 - New ``--nolock`` option for ignoring file locks when opening read-only databases. (:issue:`1744`)
 - Spaces in the database names in URLs are now encoded as ``+`` rather than ``~20``. (:issue:`1701`)
 - ``<Binary: 2427344 bytes>`` is now displayed as ``<Binary: 2,427,344 bytes>`` and is accompanied by tooltip showing "2.3MB". (:issue:`1712`)
-- The base Docker image used by ``datasette publish cloudrun``, ``datasette package`` and the `official Datasette image <https://hub.docker.com/datasetteproject/datasette>`__ has been upgraded to ``3.10.6-slim-bullseye``.  (:issue:`1768`)
+- The base Docker image used by ``datasette publish cloudrun``, ``datasette package`` and the `official Datasette image <https://hub.docker.com/r/datasetteproject/datasette>`__ has been upgraded to ``3.10.6-slim-bullseye``.  (:issue:`1768`)
 - Canned writable queries against immutable databases now show a warning message. (:issue:`1728`)
 - ``datasette publish cloudrun`` has a new ``--timeout`` option which can be used to increase the time limit applied by the Google Cloud build environment. Thanks, Tim Sherratt. (:pr:`1717`)
 - ``datasette publish cloudrun`` has new ``--min-instances`` and ``--max-instances`` options. (:issue:`1779`)
@@ -2170,7 +2204,7 @@ If you are still running Python 3.5 you should stick with ``0.30.2``, which you 
 - Removed obsolete ``?_group_count=col`` feature (:issue:`504`)
 - Improved user interface and documentation for ``datasette publish cloudrun`` (:issue:`608`)
 - Tables with indexes now show the ``CREATE INDEX`` statements on the table page (:issue:`618`)
-- Current version of `uvicorn <https://www.uvicorn.org/>`__ is now shown on ``/-/versions``
+- Current version of `uvicorn <https://uvicorn.dev/>`__ is now shown on ``/-/versions``
 - Python 3.8 is now supported! (:issue:`622`)
 - Python 3.5 is no longer supported.
 
@@ -2221,7 +2255,7 @@ If you are still running Python 3.5 you should stick with ``0.30.2``, which you 
 0.29.2 (2019-07-13)
 -------------------
 
-- Bumped `Uvicorn <https://www.uvicorn.org/>`__ to 0.8.4, fixing a bug where the query string was not included in the server logs. (:issue:`559`)
+- Bumped `Uvicorn <https://uvicorn.dev/>`__ to 0.8.4, fixing a bug where the query string was not included in the server logs. (:issue:`559`)
 - Fixed bug where the navigation breadcrumbs were not displayed correctly on the page for a custom query. (:issue:`558`)
 - Fixed bug where custom query names containing unicode characters caused errors.
 
@@ -2243,7 +2277,7 @@ ASGI, new plugin hooks, facet by date and much, much more...
 ASGI
 ~~~~
 
-`ASGI <https://asgi.readthedocs.io/>`__ is the Asynchronous Server Gateway Interface standard. I've been wanting to convert Datasette into an ASGI application for over a year - `Port Datasette to ASGI #272 <https://github.com/simonw/datasette/issues/272>`__ tracks thirteen months of intermittent development - but with Datasette 0.29 the change is finally released. This also means Datasette now runs on top of `Uvicorn <https://www.uvicorn.org/>`__ and no longer depends on `Sanic <https://github.com/huge-success/sanic>`__.
+`ASGI <https://asgi.readthedocs.io/>`__ is the Asynchronous Server Gateway Interface standard. I've been wanting to convert Datasette into an ASGI application for over a year - `Port Datasette to ASGI #272 <https://github.com/simonw/datasette/issues/272>`__ tracks thirteen months of intermittent development - but with Datasette 0.29 the change is finally released. This also means Datasette now runs on top of `Uvicorn <https://uvicorn.dev/>`__ and no longer depends on `Sanic <https://github.com/huge-success/sanic>`__.
 
 I wrote about the significance of this change in `Porting Datasette to ASGI, and Turtles all the way down <https://simonwillison.net/2019/Jun/23/datasette-asgi/>`__.
 
@@ -2657,7 +2691,7 @@ Miscellaneous
   as a string.
 * If you just want an array of the first value of each row, use the new
   ``?_shape=arrayfirst`` option - `example
-  <https://latest.datasette.io/fixtures.json?sql=select+neighborhood+from+facetable+order+by+pk+limit+101&_shape=arrayfirst>`_.
+  <https://latest.datasette.io/fixtures.json?sql=select+_neighborhood+from+facetable+order+by+pk+limit+101&_shape=arrayfirst>`_.
 
 0.22.1 (2018-05-23)
 -------------------

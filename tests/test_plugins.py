@@ -53,6 +53,13 @@ def test_hook_jump_items_sql():
     assert "jump_items_sql" in dir(pm.hook)
 
 
+def test_hook_shutdown():
+    # Detailed behavior (ordering against background-task cancellation and
+    # close(), idempotency, exception handling, sync vs async support) is
+    # covered in tests/test_shutdown.py.
+    assert "shutdown" in dir(pm.hook)
+
+
 @pytest.mark.asyncio
 async def test_hook_plugins_dir_plugin_prepare_connection(ds_client):
     response = await ds_client.get(
@@ -420,6 +427,72 @@ def test_hook_extra_template_vars(restore_working_directory):
             "awaitable": True,
             "scope_path": "/-/versions",
         } == extra_template_vars_from_awaitable
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "return_style", ["direct", "callable", "async_callable", "awaitable"]
+)
+async def test_hook_extra_template_vars_none(ds_client, return_style):
+    class OtherPlugin:
+        @hookimpl
+        def extra_template_vars(self):
+            return {"other": "present"}
+
+    class ConditionalPlugin:
+        @hookimpl
+        def extra_template_vars(self, view_name):
+            def inner():
+                if view_name == "database":
+                    return {"conditional": "database"}
+
+            async def async_inner():
+                return inner()
+
+            if return_style == "direct":
+                return inner()
+            elif return_style == "callable":
+                return inner
+            elif return_style == "async_callable":
+                return async_inner
+            else:
+                return async_inner()
+
+    other_plugin = OtherPlugin()
+    conditional_plugin = ConditionalPlugin()
+    pm.register(other_plugin)
+    pm.register(conditional_plugin)
+    try:
+        template = ds_client.ds.get_jinja_environment().from_string(
+            "{{ other }}:{{ conditional|default('missing') }}"
+        )
+        for view_name, expected in (
+            ("database", "present:database"),
+            ("index", "present:missing"),
+        ):
+            rendered = await ds_client.ds.render_template(template, view_name=view_name)
+            assert rendered == expected
+    finally:
+        pm.unregister(conditional_plugin)
+        pm.unregister(other_plugin)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_value", [False, 0, "", [], ()])
+async def test_hook_extra_template_vars_invalid(ds_client, invalid_value):
+    class InvalidPlugin:
+        @hookimpl
+        def extra_template_vars(self):
+            return lambda: invalid_value
+
+    plugin = InvalidPlugin()
+    pm.register(plugin)
+    try:
+        template = ds_client.ds.get_jinja_environment().from_string("test")
+        with pytest.raises(AssertionError, match="extra_vars is of type"):
+            await ds_client.ds.render_template(template)
+    finally:
+        pm.unregister(plugin)
 
 
 def test_plugins_async_template_function(restore_working_directory):
@@ -1300,7 +1373,8 @@ async def test_hook_filters_from_request(ds_client):
 
     ds_client.ds.pm.register(ReturnNothingPlugin(), name="ReturnNothingPlugin")
     response = await ds_client.get("/fixtures/facetable?_nothing=1")
-    assert "0 rows\n        where NOTHING" in response.text
+    summary = Soup(response.text, "html.parser").select_one(".table-summary")
+    assert summary.get_text(" ", strip=True) == "0 rows where NOTHING"
     json_response = await ds_client.get("/fixtures/facetable.json?_nothing=1")
     assert json_response.json()["rows"] == []
     ds_client.ds.pm.unregister(name="ReturnNothingPlugin")

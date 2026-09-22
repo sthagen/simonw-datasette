@@ -497,6 +497,7 @@ def uninstall(packages, yes):
     "--internal",
     type=click.Path(),
     help="Path to a persistent Datasette internal SQLite database",
+    envvar="DATASETTE_INTERNAL",
 )
 def serve(
     files,
@@ -677,6 +678,11 @@ def serve(
             run_sync(ds.invoke_startup)
         except StartupError as e:
             raise click.ClickException(e.args[0])
+
+        # --get never launches background tasks: TestClient's request below
+        # flows through the full ASGI stack, including the
+        # AsgiRunOnFirstRequest fallback, which would otherwise launch them.
+        ds._suppress_background_tasks = True
 
         client = TestClient(ds)
         request_headers = {}
